@@ -1,0 +1,12 @@
+services:
+  nextstep-stock-adjust:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8004"
+    env_file:
+      - .env
+    environment:
+      - COOKIE_SECURE=false
+    restart: unless-stopped

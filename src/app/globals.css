@@ -1,0 +1,197 @@
+@import "tailwindcss";
+
+/* Theme safelist - Force Tailwind to generate all theme classes */
+@source inline("
+  from-purple-600 via-purple-700 to-pink-600
+  from-purple-500 to-purple-600
+  from-pink-500 to-pink-600
+  from-purple-100 via-fuchsia-100 to-pink-100
+  from-purple-600 via-fuchsia-600 to-pink-600
+  from-purple-50 to-pink-50
+  from-purple-700 via-purple-800 to-fuchsia-700
+  border-purple-200 text-purple-700 text-purple-600 text-purple-300
+  bg-purple-100 bg-purple-200 bg-purple-600 bg-purple-700
+  hover:bg-purple-300 hover:bg-purple-700
+  
+  from-orange-400 via-orange-500 to-rose-500
+  from-orange-500 to-orange-600
+  from-red-500 to-red-600
+  from-orange-100 via-amber-100 to-yellow-100
+  from-orange-500 via-amber-500 to-yellow-500
+  from-orange-50 to-yellow-50
+  from-orange-600 via-orange-700 to-amber-600
+  from-orange-500 via-orange-600 to-amber-500
+  border-orange-200 text-orange-700 text-orange-600 text-orange-300
+  bg-orange-100 bg-orange-200 bg-orange-500 bg-orange-600
+  hover:bg-orange-300 hover:bg-orange-600
+  bg-yellow-300 bg-yellow-400
+  
+  from-blue-500 via-blue-600 to-indigo-600
+  from-blue-500 to-blue-600
+  from-indigo-500 to-indigo-600
+  from-blue-100 via-sky-100 to-cyan-100
+  from-blue-500 via-sky-500 to-cyan-500
+  from-blue-50 to-cyan-50
+  from-blue-600 via-blue-700 to-sky-600
+  from-blue-700 via-blue-800 to-sky-700
+  border-blue-200 text-blue-700 text-blue-600 text-blue-300
+  bg-blue-100 bg-blue-200 bg-blue-500 bg-blue-600
+  hover:bg-blue-300 hover:bg-blue-600
+  bg-cyan-300
+  
+  from-emerald-500 via-teal-500 to-green-500
+  from-emerald-500 to-emerald-600
+  from-teal-500 to-teal-600
+  from-emerald-100 via-teal-100 to-green-100
+  from-emerald-500 via-teal-500 to-green-500
+  from-emerald-50 to-green-50
+  from-emerald-600 via-emerald-700 to-teal-600
+  from-emerald-700 via-emerald-800 to-teal-700
+  border-emerald-200 text-emerald-700 text-emerald-600 text-emerald-300
+  bg-emerald-100 bg-emerald-200 bg-emerald-500 bg-emerald-600
+  hover:bg-emerald-300 hover:bg-emerald-600
+  bg-yellow-300
+  
+  from-red-500 via-rose-500 to-pink-500
+  from-red-500 to-red-600
+  from-rose-500 to-rose-600
+  from-red-100 via-rose-100 to-pink-100
+  from-red-500 via-rose-500 to-pink-500
+  from-red-50 to-pink-50
+  from-red-600 via-red-700 to-rose-600
+  from-red-700 via-red-800 to-rose-700
+  border-red-200 text-red-700 text-red-600 text-red-300
+  bg-red-100 bg-red-200 bg-red-500 bg-red-600
+  hover:bg-red-300 hover:bg-red-600
+  bg-pink-300
+  
+  from-slate-700 via-slate-800 to-zinc-800
+  from-slate-600 to-slate-700
+  from-zinc-600 to-zinc-700
+  from-slate-200 via-zinc-200 to-gray-200
+  from-slate-600 via-zinc-600 to-gray-600
+  from-slate-100 to-gray-100
+  from-slate-600 via-slate-700 to-zinc-600
+  from-slate-700 via-slate-800 to-zinc-700
+  border-slate-300 text-slate-700 text-slate-600 text-slate-400
+  bg-slate-100 bg-slate-200 bg-slate-600 bg-slate-700
+  hover:bg-slate-300 hover:bg-slate-700
+  bg-gray-300
+  
+  hover:from-purple-50 hover:to-pink-50
+  hover:from-orange-50 hover:to-yellow-50
+  hover:from-blue-50 hover:to-cyan-50
+  hover:from-emerald-50 hover:to-green-50
+  hover:from-red-50 hover:to-pink-50
+  hover:from-slate-100 hover:to-gray-100
+  
+  placeholder-purple-300 placeholder-orange-300 placeholder-blue-300
+  placeholder-emerald-300 placeholder-red-300 placeholder-slate-400
+");
+
+:root {
+  --background: #f8f9fa;
+  --foreground: #171717;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  
+  /* Font color variables - will be overridden by ThemeContext */
+  --font-primary: #1f2937;
+  --font-secondary: #4b5563;
+  --font-muted: #9ca3af;
+  --font-heading: #111827;
+  --font-body: #374151;
+  --font-link: #3b82f6;
+  --font-success: #10b981;
+  --font-warning: #f59e0b;
+  --font-error: #ef4444;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--font-body);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Apply font colors globally when font theme is active */
+body.font-theme-active,
+body.font-theme-active h1, 
+body.font-theme-active h2, 
+body.font-theme-active h3, 
+body.font-theme-active h4, 
+body.font-theme-active h5, 
+body.font-theme-active h6,
+body.font-theme-active p,
+body.font-theme-active span,
+body.font-theme-active div,
+body.font-theme-active td,
+body.font-theme-active th,
+body.font-theme-active label,
+body.font-theme-active li,
+body.font-theme-active button,
+body.font-theme-active input,
+body.font-theme-active select,
+body.font-theme-active textarea,
+body.font-theme-active [class*="text-gray-"],
+body.font-theme-active [class*="text-purple-"],
+body.font-theme-active [class*="text-orange-"],
+body.font-theme-active [class*="text-blue-"],
+body.font-theme-active [class*="text-emerald-"],
+body.font-theme-active [class*="text-red-"],
+body.font-theme-active [class*="text-yellow-"],
+body.font-theme-active [class*="text-amber-"],
+body.font-theme-active [class*="text-slate-"],
+body.font-theme-active [class*="text-green-"],
+body.font-theme-active [class*="text-zinc-"] {
+  color: var(--font-body) !important;
+}
+
+/* Exclude white text (for dark backgrounds like sidebar, buttons) */
+body.font-theme-active .text-white,
+body.font-theme-active [class*="text-white"] {
+  color: white !important;
+}
+
+/* Exclude elements that should keep their original color */
+body.font-theme-active .exclude-font-theme,
+body.font-theme-active .exclude-font-theme * {
+  color: inherit !important;
+}
+
+/* Utility classes for font colors */
+.text-font-primary { color: var(--font-primary) !important; }
+.text-font-secondary { color: var(--font-secondary) !important; }
+.text-font-muted { color: var(--font-muted) !important; }
+.text-font-heading { color: var(--font-heading) !important; }
+.text-font-body { color: var(--font-body) !important; }
+.text-font-link { color: var(--font-link) !important; }
+.text-font-success { color: var(--font-success) !important; }
+.text-font-warning { color: var(--font-warning) !important; }
+.text-font-error { color: var(--font-error) !important; }
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #93c5fd;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #60a5fa;
+}
