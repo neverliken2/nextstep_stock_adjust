@@ -201,7 +201,7 @@ function mapApiError(err: unknown): string {
       case 'INVALID_CREDENTIALS':
         return 'รหัสผู้ใช้หรือรหัสผ่านไม่ถูกต้อง';
       case 'NO_PERMISSION':
-        return 'ไม่มีสิทธิ์เข้าใช้งานระบบ (ต้องมีสิทธิ์ menu_ic_stk_adjust)';
+        return 'ไม่มีสิทธิ์เข้าใช้งานระบบ (ต้องมีสิทธิ์เมนู "ปรับปรุงสินค้า/วัตถุดิบ")';
       case 'PROVIDER_NOT_FOUND':
         return 'ไม่พบ Provider ที่ระบุ';
       case 'DATABASE_NOT_FOUND':
