@@ -2,8 +2,8 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { updateSessionDatabase, destroySession } from '@/actions/session';
-import { loginUser } from '@/actions/auth';
+import { destroySession } from '@/actions/session';
+import { loginUser, selectDatabase as selectDatabaseAction } from '@/actions/auth';
 
 // Session timeout: 30 minutes
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
@@ -168,11 +168,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const selectDatabase = async (database: UserDatabase) => {
     if (!user) return;
     
-    // อัพเดท session cookie ที่ server (ตรวจสอบสิทธิ์ด้วย)
-    const result = await updateSessionDatabase(database.database_name, database.name);
-    
+    // เรียก smlnesservice /auth/select-database ผ่าน server action
+    // → แลก preSelectJWT เป็น sessionJWT + อัพเดท session cookie
+    const result = await selectDatabaseAction(database.database_name);
+
     if (!result.success) {
-      console.error('Failed to update session:', result.error);
+      console.error('Failed to select database:', result.message);
       void performLogout();
       return;
     }

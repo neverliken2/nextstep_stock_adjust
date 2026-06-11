@@ -10,7 +10,7 @@ function getSessionSecret(): string {
     throw new Error('SESSION_SECRET is required in production');
   }
 
-  return 'nextstep-cn-dev-session-secret';
+  return 'nextstep-stock-adjust-dev-session-secret';
 }
 
 function base64UrlEncode(value: string): string {

@@ -6,7 +6,7 @@
  * exported and used outside of Server Actions.
  */
 
-export const SESSION_COOKIE_NAME = 'nextstep_ia_session';
+export const SESSION_COOKIE_NAME = 'nextstep_stock_adjust_session';
 
 export function getCookieOptions() {
   const forceInsecure = process.env.COOKIE_SECURE === 'false';
