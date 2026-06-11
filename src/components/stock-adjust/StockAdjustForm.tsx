@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState, useTransition } from 'react';
-import { Save, Plus, Trash2, RefreshCw, FileSpreadsheet, Search } from 'lucide-react';
+import { useEffect, useMemo, useState, useTransition } from 'react';
+import { Save, Plus, Trash2, RefreshCw, FileSpreadsheet, Search, History } from 'lucide-react';
 import {
+  getErpOption,
   getItemDefaults,
   saveStockAdjust,
   searchWarehouses,
@@ -15,6 +16,8 @@ import {
 import ItemPickerModal from './ItemPickerModal';
 import ImportModal from './ImportModal';
 import LookupPickerModal, { type LookupOption } from './LookupPickerModal';
+import PurchaseHistoryModal from './PurchaseHistoryModal';
+import DateInputDDMMYYYY from '@/components/ui/DateInputDDMMYYYY';
 
 interface EditableLine {
   key: number;
@@ -57,6 +60,15 @@ function formatMoney(n: number): string {
   });
 }
 
+/** Format ด้วยทศนิยมตายตัว (จาก erp_option.item_amount_decimal) */
+function formatAmount(n: number, decimal: number): string {
+  if (!Number.isFinite(n)) return '-';
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: decimal,
+    maximumFractionDigits: decimal,
+  });
+}
+
 export default function StockAdjustForm() {
   // ── Header state ──
   const [docDate, setDocDate] = useState<string>(todayISO());
@@ -72,6 +84,33 @@ export default function StockAdjustForm() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerKey, setPickerKey] = useState(0);
   const [importOpen, setImportOpen] = useState(false);
+
+  // ── ERP options (vat_rate + decimals) — fetch ครั้งเดียวตอน mount ──
+  const [vatRate, setVatRate] = useState<number>(7);
+  const [amountDecimal, setAmountDecimal] = useState<number>(2);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const opt = await getErpOption();
+        if (cancelled) return;
+        setVatRate(opt.vat_rate);
+        setAmountDecimal(opt.item_amount_decimal);
+      } catch {
+        // fallback ใช้ default (7, 2) ที่ตั้งไว้แล้ว
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ── Purchase history modal state ──
+  const [historyItem, setHistoryItem] = useState<{
+    code: string;
+    name: string;
+  } | null>(null);
 
   // ── Wh/Shelf picker state ──
   // target: 'header' | line key, kind: 'wh' | 'shelf'
@@ -174,7 +213,21 @@ export default function StockAdjustForm() {
     [lines]
   );
 
+  /** เช็คว่าเลือก คลัง+พื้นที่ ที่ header แล้วก่อนเพิ่มสินค้า — กัน query stock/cost ผิดคลัง */
+  function checkLocationSelected(): boolean {
+    if (!whFrom.trim()) {
+      alert('กรุณาเลือกคลัง (ที่ header ด้านบน) ก่อนเพิ่มรายการ');
+      return false;
+    }
+    if (!locationFrom.trim()) {
+      alert('กรุณาเลือกพื้นที่เก็บ (ที่ header ด้านบน) ก่อนเพิ่มรายการ');
+      return false;
+    }
+    return true;
+  }
+
   function addLine() {
+    if (!checkLocationSelected()) return;
     setPickerKey((k) => k + 1);
     setPickerOpen(true);
   }
@@ -295,10 +348,9 @@ export default function StockAdjustForm() {
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <Field label="วันที่เอกสาร *">
-            <input
-              type="date"
+            <DateInputDDMMYYYY
               value={docDate}
-              onChange={(e) => setDocDate(e.target.value)}
+              onChange={setDocDate}
               className={inputClass}
             />
           </Field>
@@ -326,10 +378,9 @@ export default function StockAdjustForm() {
             />
           </Field>
           <Field label="วันที่อ้างอิง">
-            <input
-              type="date"
+            <DateInputDDMMYYYY
               value={docRefDate}
-              onChange={(e) => setDocRefDate(e.target.value)}
+              onChange={setDocRefDate}
               className={inputClass}
             />
           </Field>
@@ -388,7 +439,10 @@ export default function StockAdjustForm() {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setImportOpen(true)}
+              onClick={() => {
+                if (!checkLocationSelected()) return;
+                setImportOpen(true);
+              }}
               className="flex items-center gap-2 rounded-lg border border-purple-300 bg-white px-3 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50"
               title="Import จาก Excel"
             >
@@ -415,6 +469,12 @@ export default function StockAdjustForm() {
                 <th className="px-2 py-2 text-left">หน่วย</th>
                 <th className="px-2 py-2 text-right">คงเหลือ</th>
                 <th className="px-2 py-2 text-right">ทุนเดิม</th>
+                <th
+                  className="px-2 py-2 text-right"
+                  title={`ทุนเดิม × (100 + ${vatRate}) ÷ 100`}
+                >
+                  ทุนรวม VAT
+                </th>
                 <th className="px-2 py-2 text-right">ทุนเฉลี่ยที่ต้องการ</th>
                 <th className="px-2 py-2 text-right">มูลค่า</th>
                 <th className="px-2 py-2"></th>
@@ -424,7 +484,7 @@ export default function StockAdjustForm() {
               {lines.length === 0 && (
                 <tr>
                   <td
-                    colSpan={10}
+                    colSpan={11}
                     className="px-2 py-6 text-center text-sm text-gray-400"
                   >
                     ยังไม่มีรายการ — กด &quot;เพิ่มรายการ&quot;
@@ -515,6 +575,15 @@ export default function StockAdjustForm() {
                     <td className="px-2 py-1 text-right text-gray-700">
                       {formatMoney(l.old_cost)}
                     </td>
+                    <td
+                      className="px-2 py-1 text-right text-gray-700 tabular-nums"
+                      title={`${l.old_cost} × (100 + ${vatRate}) ÷ 100`}
+                    >
+                      {formatAmount(
+                        (Number(l.old_cost) * (100 + vatRate)) / 100,
+                        amountDecimal
+                      )}
+                    </td>
                     <td className="px-2 py-1">
                       <input
                         type="number"
@@ -531,14 +600,29 @@ export default function StockAdjustForm() {
                       {formatMoney(sum)}
                     </td>
                     <td className="px-2 py-1 text-center">
-                      <button
-                        type="button"
-                        onClick={() => removeLine(l.key)}
-                        className="rounded p-1 text-red-500 hover:bg-red-50"
-                        title="ลบ"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setHistoryItem({
+                              code: l.item_code,
+                              name: l.item_name,
+                            })
+                          }
+                          className="rounded p-1 text-purple-500 hover:bg-purple-50"
+                          title="ดูประวัติการซื้อ"
+                        >
+                          <History className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeLine(l.key)}
+                          className="rounded p-1 text-red-500 hover:bg-red-50"
+                          title="ลบ"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -547,7 +631,7 @@ export default function StockAdjustForm() {
             {lines.length > 0 && (
               <tfoot className="bg-gray-50">
                 <tr>
-                  <td colSpan={8} className="px-2 py-2 text-right font-semibold text-gray-700">
+                  <td colSpan={9} className="px-2 py-2 text-right font-semibold text-gray-700">
                     รวมมูลค่า
                   </td>
                   <td className="px-2 py-2 text-right text-lg font-bold text-purple-700">
@@ -607,6 +691,14 @@ export default function StockAdjustForm() {
         hint={lookupHint}
         onClose={() => setLookupOpen(false)}
         onSelect={onLookupSelect}
+      />
+
+      <PurchaseHistoryModal
+        open={historyItem !== null}
+        itemCode={historyItem?.code ?? ''}
+        itemName={historyItem?.name}
+        amountDecimal={amountDecimal}
+        onClose={() => setHistoryItem(null)}
       />
     </div>
   );

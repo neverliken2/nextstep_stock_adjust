@@ -1,6 +1,6 @@
 # Deployment Guide — NextStep Stock Adjust (IA)
 
-Docker image: **`neverliken/nextstep_stock_adjust:1.1.0`** (Docker Hub)
+Docker image: **`neverliken/nextstep_stock_adjust:1.2.0`** (Docker Hub)
 
 ## Prerequisites (Customer Server)
 
@@ -19,7 +19,7 @@ Create `docker-compose.yml`:
 ```yaml
 services:
   nextstep-stock-adjust:
-    image: neverliken/nextstep_stock_adjust:1.1.0
+    image: neverliken/nextstep_stock_adjust:1.2.0
     container_name: nextstep_stock_adjust
     ports:
       - "8004:8004"

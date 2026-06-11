@@ -154,12 +154,41 @@ function round5(n: number): number {
 
 // ==================== Search Items ====================
 
-export async function searchItems(query: string): Promise<ItemOption[]> {
+export interface ItemSearchResult {
+  rows: ItemOption[];
+  has_more: boolean;
+}
+
+/**
+ * ค้นหาสินค้าจาก ic_inventory พร้อม pagination
+ * - query ว่าง → คืนรายการทั้งหมด (เรียงตาม code)
+ * - query มีค่า → filter ด้วย code/name_1 ILIKE
+ * - query limit+1 รู้ว่ามี next page ไหม
+ */
+export async function searchItems(
+  query: string,
+  offset: number = 0,
+  limit: number = 30
+): Promise<ItemSearchResult> {
+  const empty: ItemSearchResult = { rows: [], has_more: false };
+
   const auth = await getAuthorizedDatabase();
-  if ('error' in auth) return [];
+  if ('error' in auth) return empty;
 
   const q = (query || '').trim().slice(0, 50);
-  const like = `%${q}%`;
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
+  const safeOffset = Math.max(0, Number(offset) || 0);
+
+  const params: (string | number)[] = [];
+  let whereClause = '';
+  if (q) {
+    const like = `%${q}%`;
+    params.push(like);
+    whereClause = `WHERE code ILIKE $1 OR name_1 ILIKE $1`;
+  }
+  params.push(safeLimit + 1, safeOffset);
+  const limitIdx = params.length - 1;
+  const offsetIdx = params.length;
 
   const result = await safeQuery<{
     code: string;
@@ -170,18 +199,21 @@ export async function searchItems(query: string): Promise<ItemOption[]> {
     auth.database,
     `SELECT code, name_1, unit_standard, average_cost
      FROM ic_inventory
-     WHERE code ILIKE $1 OR name_1 ILIKE $1
+     ${whereClause}
      ORDER BY code
-     LIMIT 50`,
-    [like]
+     LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+    params
   );
 
-  return result.rows.map((r) => ({
+  const has_more = result.rows.length > safeLimit;
+  const rows = result.rows.slice(0, safeLimit).map((r) => ({
     code: r.code,
     name: (r.name_1 || '').trim(),
     unit_standard: r.unit_standard || '',
     average_cost: Number(r.average_cost) || 0,
   }));
+
+  return { rows, has_more };
 }
 
 // ==================== Get Item Defaults ====================
@@ -430,6 +462,118 @@ export async function searchShelves(
     name: (r.name_1 || '').trim(),
     wh_code: r.whcode || '',
   }));
+}
+
+// ==================== ERP Option (vat_rate + decimals) ====================
+// ดึงครั้งเดียวตอนเปิดหน้า — cache ที่ frontend
+
+export interface ErpOption {
+  vat_rate: number;          // % เช่น 7
+  item_amount_decimal: number; // จำนวนทศนิยมสำหรับมูลค่า/ทุน
+}
+
+export async function getErpOption(): Promise<ErpOption> {
+  const fallback: ErpOption = { vat_rate: 7, item_amount_decimal: 2 };
+
+  const auth = await getAuthorizedDatabase();
+  if ('error' in auth) return fallback;
+
+  const res = await safeQuery<{
+    vat_rate: string | null;
+    item_amount_decimal: number | null;
+  }>(
+    auth.database,
+    `SELECT vat_rate, item_amount_decimal FROM erp_option LIMIT 1`,
+    []
+  );
+  if (res.rows.length === 0) return fallback;
+
+  const r = res.rows[0];
+  const vatRate = Number(r.vat_rate);
+  const decimal = Number(r.item_amount_decimal);
+  return {
+    vat_rate: Number.isFinite(vatRate) && vatRate >= 0 ? vatRate : 7,
+    item_amount_decimal:
+      Number.isFinite(decimal) && decimal >= 0 ? decimal : 2,
+  };
+}
+
+// ==================== Purchase History ====================
+// ดึงประวัติการซื้อ (trans_flag=12, last_status=0) ของ item ใช้ lazy load
+// query limit+1 แถวเพื่อรู้ has_more โดยไม่ต้อง COUNT(*) เพิ่ม
+
+export interface PurchaseHistoryRow {
+  doc_no: string;
+  doc_date: string; // ISO YYYY-MM-DD (frontend format เป็น DD/MM/YYYY เอง)
+  vendor_code: string;
+  vendor_name: string;
+  qty: number;
+  price: number;
+  unit_code: string;
+  vat_type: number; // 1=รวมใน, 2=แยกนอก, อื่น=ไม่มี
+}
+
+export interface PurchaseHistoryResult {
+  rows: PurchaseHistoryRow[];
+  has_more: boolean;
+}
+
+export async function getPurchaseHistory(
+  itemCode: string,
+  offset: number,
+  limit: number
+): Promise<PurchaseHistoryResult> {
+  const empty: PurchaseHistoryResult = { rows: [], has_more: false };
+
+  const auth = await getAuthorizedDatabase();
+  if ('error' in auth) return empty;
+
+  const code = (itemCode || '').trim();
+  if (!code) return empty;
+
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 100));
+  const safeOffset = Math.max(0, Number(offset) || 0);
+
+  const res = await safeQuery<{
+    doc_no: string;
+    doc_date: string;
+    cust_code: string | null;
+    vendor_name: string | null;
+    qty: string;
+    price: string;
+    unit_code: string;
+    vat_type: number;
+  }>(
+    auth.database,
+    `SELECT t.doc_no,
+            TO_CHAR(t.doc_date, 'YYYY-MM-DD') AS doc_date,
+            t.cust_code,
+            s.name_1 vendor_name,
+            d.qty, d.price, d.unit_code, d.vat_type
+     FROM ic_trans t
+     JOIN ic_trans_detail d ON d.trans_flag=t.trans_flag AND d.doc_no=t.doc_no
+     LEFT JOIN ap_supplier s ON s.code = t.cust_code
+     WHERE t.trans_flag = 12
+       AND t.last_status = 0
+       AND d.item_code = $1
+     ORDER BY t.doc_date DESC, t.doc_no DESC
+     LIMIT $2 OFFSET $3`,
+    [code, safeLimit + 1, safeOffset]
+  );
+
+  const has_more = res.rows.length > safeLimit;
+  const rows = res.rows.slice(0, safeLimit).map((r) => ({
+    doc_no: r.doc_no,
+    doc_date: r.doc_date ? String(r.doc_date).slice(0, 10) : '',
+    vendor_code: (r.cust_code || '').trim(),
+    vendor_name: (r.vendor_name || '').trim(),
+    qty: Number(r.qty) || 0,
+    price: Number(r.price) || 0,
+    unit_code: (r.unit_code || '').trim(),
+    vat_type: Number(r.vat_type) || 0,
+  }));
+
+  return { rows, has_more };
 }
 
 // ==================== Validate Import Rows ====================
