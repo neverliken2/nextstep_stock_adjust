@@ -2,8 +2,32 @@
 
 > **Audience**: Agent ใน session ของ `smlnesservice` project
 > **Goal**: เพิ่ม endpoints ให้ NextStep_Stock_Adjust ถอด `pg` ตรง → คุยผ่าน smlnesservice แทน
-> **Pattern reference**: `src/modules/credit-note/` (มีอยู่แล้ว ลอกโครงสร้างมาใช้)
+> **Pattern reference**: `src/modules/credit-note/` (มีอยู่แล้ว — **อ่านอย่างเดียว ห้ามแก้**)
 > **Source ของ business logic เดิม**: `C:\Users\never\Documents\work\NextStep_Stock_Adjust\src\actions\stock-adjust.ts`
+
+---
+
+## 🔴 0. Backward Compatibility Constraint (อ่านก่อนเริ่ม)
+
+**กฎเหล็ก**: ห้ามแก้ code ที่ CN coupon (`nextstep_cn_coupon`) production ใช้อยู่ — เพื่อกัน flow CN พังโดยอุบัติเหตุ
+
+### ✅ ทำได้
+- เพิ่ม endpoint ใหม่ใต้ `/api/v1/stock-adjust/*` (ไม่ทับของเดิม)
+- เพิ่ม endpoint ใหม่ `/api/v1/erp-option` (CN ไม่ได้ใช้)
+- เพิ่ม class/service ใหม่ใน `src/modules/auth/` (เช่น `StockAdjustPermissionService` ใหม่)
+- เพิ่ม `clientCode` เป็น branch ใน `auth.service.ts.login()` แบบ append (เก่ายังทำงาน)
+- เพิ่ม row ใน `ALLOWED_CLIENTS_JSON` (env)
+- เพิ่ม module ใหม่ `src/modules/stock-adjust/`
+
+### ❌ ห้ามทำ
+- **ห้าม refactor** `CnPermissionService` ให้ generic
+- **ห้ามย้าย** `doc-no.service.ts` จาก `modules/credit-note/` → ใช้วิธี duplicate ไปไว้ใน `modules/stock-adjust/` แทน
+- **ห้ามแก้ shape** ของ `/auth/login`, `/auth/select-database` response
+- **ห้ามแก้ AuthService logic** ส่วนที่ CN ใช้ (เพิ่ม branch ใหม่ขนานกันได้ แต่ห้ามเปลี่ยน flow เดิม)
+- **ห้ามแตะ** ไฟล์ใน `modules/credit-note/` แม้แต่นิดเดียว
+
+### 🟡 ยกเว้น (refactor ของเดิมได้)
+- ถ้าจะแก้ของเดิม ต้อง **พิสูจน์ก่อน** ด้วย e2e test ว่า CN flow ยังทำงานครบ — ไม่มี test = ห้ามแตะ
 
 ---
 
@@ -441,9 +465,9 @@ export function round2(n: number): number {
 
 ---
 
-## 7. Auth Integration
+## 7. Auth Integration (no breaking change)
 
-**ทุก endpoint ใช้ TenantContext จาก global JwtAuthGuard:**
+**ทุก endpoint ใช้ TenantContext จาก global JwtAuthGuard (เหมือน CN):**
 ```ts
 @Get('items')
 async searchItems(
@@ -454,33 +478,64 @@ async searchItems(
 }
 ```
 
-`ctx.database` = ชื่อ data DB (เช่น `'demo'`) — ไม่ใช่ smlerpmain เพราะ user เลือกแล้ว → ใส่ลง `PoolManagerService.query(database, sql, params)`
+`ctx.database` = ชื่อ data DB (เช่น `'demo'`) — ใส่ลง `PoolManagerService.query(database, sql, params)`
 
-**Client token** ต้อง add ใน `ALLOWED_CLIENTS_JSON`:
+**Client token** เพิ่ม row ใหม่ใน `ALLOWED_CLIENTS_JSON` (ของ CN ยังอยู่ครบ):
 ```json
 [
-  {"clientCode":"nextstep_cn_coupon","tokenHash":"$2b$12$..."},
-  {"clientCode":"nextstep_stock_adjust","tokenHash":"$2b$12$..."}  ← NEW
+  {"clientCode":"nextstep_cn_coupon","tokenHash":"$2b$12$..."},          // เดิม — ห้ามแตะ
+  {"clientCode":"nextstep_stock_adjust","tokenHash":"$2b$12$..."}        // ← เพิ่ม
 ]
 ```
 
-> ฝั่ง NextStep_Stock_Adjust จะใช้ `SMLNES_CLIENT_TOKEN` (raw) ที่ match กับ hash นี้
+### 7.1 Permission Check (per-client)
+
+**กฎ:** CN และ Stock Adjust ใช้ menu code คนละตัว → ต้องเลือก permission service ตาม `clientCode`
+
+**ทำแบบไหน (เพื่อไม่กระทบ CN):**
+
+1. สร้าง **ไฟล์ใหม่** `src/modules/auth/stock-adjust-permission.service.ts` (mirror logic จาก `cn-permission.service.ts` — copy แล้วเปลี่ยน menu code)
+   ```ts
+   const GATE_MENU_CODE = 'menu_ic_stk_adjust';
+
+   @Injectable()
+   export class StockAdjustPermissionService {
+     async checkStockAdjustAccess(provider: string, usercode: string): Promise<PermissionResult> {
+       // logic เดียวกับ CnPermissionService — ใช้ blob/group flag
+       // เปลี่ยนแค่ GATE_MENU_CODE
+     }
+   }
+   ```
+
+2. ใน `auth.service.ts.login()` **เพิ่ม branch ใหม่** (ของ CN ยังทำงานเหมือนเดิม):
+   ```ts
+   // เดิม (CN) — ไม่แตะ
+   if (clientCode === 'nextstep_cn_coupon') {
+     const perm = await this.cnPermission.checkCreditNoteAccess(provider, user.user_code);
+     if (!perm.allowed) throw new ForbiddenException({code: ErrorCode.NO_PERMISSION, ...});
+   }
+   // ใหม่ — append
+   else if (clientCode === 'nextstep_stock_adjust') {
+     const perm = await this.stockAdjustPermission.checkStockAdjustAccess(provider, user.user_code);
+     if (!perm.allowed) throw new ForbiddenException({code: ErrorCode.NO_PERMISSION, ...});
+   }
+   ```
+
+3. ลงทะเบียน `StockAdjustPermissionService` ใน `AuthFeatureModule.providers`
+
+> **ห้าม** refactor `CnPermissionService` ให้ generic — duplicate code ยอมรับได้ในรอบนี้ (กัน CN พัง)
 
 ---
 
-## 8. doc-no.service — reuse หรือ duplicate?
+## 8. doc-no.service — Duplicate (no shared core)
 
-**ตัวเลือก A (แนะนำ): Promote `doc-no.service.ts` ของ credit-note ขึ้น core**
-- ย้าย `src/modules/credit-note/doc-no.service.ts` → `src/core/doc-no/doc-no.service.ts`
-- expose ผ่าน `core/doc-no/doc-no.module.ts` (`@Global()`)
-- ใช้ใน credit-note + stock-adjust + future modules
-- `getNextDocNo(database, formatCode, docDate, transFlag)` — accept transFlag เพราะ uniqueness check ต้องระบุ
+**ตัดสินใจ:** Copy ไฟล์มาไว้ใน module ใหม่ (ไม่ promote ขึ้น core — กัน CN ได้รับผลกระทบ)
 
-**ตัวเลือก B: Duplicate code**
-- copy ไฟล์ใน stock-adjust module
-- เร็วกว่าตอนนี้ แต่ tech debt
+- คัดลอก `src/modules/credit-note/doc-no.service.ts` → `src/modules/stock-adjust/doc-no.service.ts`
+- ใช้ scope ภายใน stock-adjust module เท่านั้น
+- API เหมือนกัน: `getNextDocNo(database, formatCode, docDate, transFlag)`
 
-→ แนะนำ A เพราะอนาคตทุก module ต้อง gen doc_no อยู่ดี
+**Tech debt ยอมรับ:** 2 ไฟล์เหมือนกัน — ถ้าจะ refactor ขึ้น core ในอนาคต ต้องทำเป็น dedicated PR + e2e test ของ CN ผ่านก่อน (อยู่นอก scope migration นี้)
 
 ---
 
@@ -521,15 +576,20 @@ INVALID_COST         = 'INVALID_COST',
 
 ---
 
-## 12. Roadmap Sequence (recommend)
+## 12. Roadmap Sequence (recommend — เรียงตามกฎ §0)
 
-1. **PR 1:** Promote `doc-no.service` ขึ้น core
-2. **PR 2:** Add `/api/v1/erp-option` (เล็ก ทดสอบ infra ก่อน)
-3. **PR 3:** Add stock-adjust read endpoints (items, warehouses, shelves, purchase-history)
-4. **PR 4:** Add stock-adjust validate-import
-5. **PR 5:** Add stock-adjust save endpoint (POST)
-6. **PR 6:** Update Swagger docs + e2e tests
-7. **PR 7:** Add `nextstep_stock_adjust` client token ใน ALLOWED_CLIENTS_JSON (production deploy)
+> ทุก PR ทำใน branch `feat/stock-adjust-module` ไม่ merge เข้า main จนกว่าจะ test integration กับฝั่ง Next.js ผ่าน
+
+1. **PR 1:** Add `StockAdjustPermissionService` (new file) + register ใน AuthFeatureModule + add `clientCode='nextstep_stock_adjust'` branch ใน `auth.service.login()` (append เท่านั้น)
+2. **PR 2:** Add `nextstep_stock_adjust` row ใน `ALLOWED_CLIENTS_JSON` (env)
+3. **PR 3:** Add core `/api/v1/erp-option` endpoint (เล็ก ทดสอบ infra ก่อน)
+4. **PR 4:** Create `src/modules/stock-adjust/` skeleton (module, controller, service, repository, dto, constants) + duplicate `doc-no.service.ts`
+5. **PR 5:** stock-adjust read endpoints (items search, items detail, warehouses, shelves, purchase-history)
+6. **PR 6:** stock-adjust validate-import endpoint
+7. **PR 7:** stock-adjust save endpoint (POST — transaction)
+8. **PR 8:** Update Swagger docs
+9. **PR 9:** e2e tests — verify CN flow ยังทำงาน + stock-adjust flow ใหม่ทำงานครบ
+10. **PR 10:** Bump version + production deploy
 
 ---
 
