@@ -1,6 +1,6 @@
 # Deployment Guide — NextStep Stock Adjust (IA)
 
-Docker image: **`neverliken/nextstep_stock_adjust:1.3.0`** (Docker Hub)
+Docker image: **`neverliken/nextstep_stock_adjust:1.4.0`** (Docker Hub)
 
 ## 🔄 Architecture (v1.3.0+)
 
@@ -31,7 +31,7 @@ Create `docker-compose.yml`:
 ```yaml
 services:
   nextstep-stock-adjust:
-    image: neverliken/nextstep_stock_adjust:1.3.0
+    image: neverliken/nextstep_stock_adjust:1.4.0
     container_name: nextstep_stock_adjust
     ports:
       - "8004:8004"
@@ -83,7 +83,7 @@ Open browser → `http://<server-ip>:8004`
 
 ```bash
 # แก้ tag ใน docker-compose.yml ก่อน
-sed -i 's|:1\.[0-9]\.[0-9]|:1.3.0|' docker-compose.yml
+sed -i 's|:1\.[0-9]\.[0-9]|:1.4.0|' docker-compose.yml
 
 docker compose pull
 docker compose up -d
