@@ -241,7 +241,7 @@ export default function LoginPage() {
           © 2025 NextStep Software & Hardware. All rights reserved.
         </p>
         <p className="text-center text-purple-300/50 text-xs mt-2">
-          v1.0.1
+          v{process.env.NEXT_PUBLIC_APP_VERSION}
         </p>
       </div>
     </div>

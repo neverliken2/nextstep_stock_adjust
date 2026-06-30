@@ -52,7 +52,17 @@ export default function Sidebar() {
           <ul className="space-y-2">
             {menuItems.map((item) => {
               const Icon = item.icon;
-              const isActive = pathname === item.href || pathname.startsWith(item.href + '/');
+              const isPrefix =
+                pathname === item.href || pathname.startsWith(item.href + '/');
+              // ถ้าเมนูอื่นมี href ที่ match ลึกกว่า → ไม่ถือว่าเมนูนี้ active
+              // กันเคส parent (/stock-adjust) ติด active พร้อม child (/stock-adjust/bulk)
+              const hasDeeperMatch = menuItems.some(
+                (o) =>
+                  o.href !== item.href &&
+                  o.href.length > item.href.length &&
+                  (pathname === o.href || pathname.startsWith(o.href + '/'))
+              );
+              const isActive = isPrefix && !hasDeeperMatch;
 
               return (
                 <li key={item.href}>

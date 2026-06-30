@@ -207,6 +207,69 @@ LIMIT 100
 
 ---
 
+### 3.4.1 `GET /api/v1/stock-adjust/item-locations/:itemCode`
+
+> เพิ่มภายหลัง (รอบ "Bulk IA by Location" — สร้างใบ IA ทุก (wh, shelf) ที่สินค้า register ใน `ic_wh_shelf`)
+
+ดึงทุก (wh, shelf) ที่สินค้านี้ถูก register + stock_qty + old_cost ต่อ wh
+
+**Path params:** `:itemCode` (string)
+
+**Response data:**
+```ts
+{
+  item: {
+    code: string;
+    name: string;
+    unit_standard: string;
+    average_cost: number;
+  } | null;
+  units: Array<{
+    code: string;
+    stand_value: number;
+    divide_value: number;
+    ratio: number;
+  }>;
+  locations: Array<{
+    wh_code: string;
+    wh_name: string;
+    shelf_code: string;
+    shelf_name: string;
+    stock_qty: number;   // ใน unit_standard — ค่าเดียวกันสำหรับทุก shelf ใน wh เดียวกัน (stock track per-wh)
+    old_cost: number;    // avg cost ปัจจุบันของ wh นั้น (cache ต่อ wh กัน query ซ้ำ)
+  }>
+}
+```
+
+**SQL หลัก (list locations):**
+```sql
+SELECT ws.wh_code,
+       COALESCE(w.name_1, '') AS wh_name,
+       ws.shelf_code,
+       COALESCE(s.name_1, '') AS shelf_name
+FROM ic_wh_shelf ws
+LEFT JOIN ic_warehouse w ON w.code = ws.wh_code
+LEFT JOIN ic_shelf s ON s.code = ws.shelf_code AND s.whcode = ws.wh_code
+WHERE ws.ic_code = $1
+  AND COALESCE(ws.status, 1) = 1
+ORDER BY ws.wh_code, ws.shelf_code
+```
+
+**Logic:**
+1. Query item + units เหมือน §3.2
+2. Query locations จาก SQL ข้างบน
+3. **สำคัญ — cache per-wh**: collect `wh_code` unique → `getStockAndCost(itemCode, whCode)` ครั้งเดียวต่อ wh → map กลับใส่ทุก shelf ของ wh เดียวกัน
+4. ถ้า `getStockAndCost` ของ wh ไหน return ไม่มี row → `stock_qty=0, old_cost=item.average_cost` (fallback)
+
+**Notes:**
+- stock + cost track per-wh ใน SML — `stock_qty` และ `old_cost` ของ 2 shelf ใน wh เดียวกันจะเท่ากันโดยธรรมชาติ
+- frontend จะเตือน user เอง (banner ⚠️) เรื่อง avg cost จะถูกปรับซ้อนถ้าเลือกหลาย shelf ใน wh เดียวกัน — ฝั่ง backend ไม่ต้องคุม
+- ไม่ต้องเพิ่ม endpoint save ใหม่ — frontend จะ loop เรียก `POST /api/v1/stock-adjust` ใบละครั้ง
+
+**Error mapping:** ใช้ของเดิม (ITEM_NOT_FOUND ถ้า item ไม่มี — แต่ถ้า item มีอยู่แต่ไม่ register ใน ic_wh_shelf → คืน `locations: []` ปกติ ไม่ใช่ error)
+
+---
+
 ### 3.5 `GET /api/v1/stock-adjust/purchase-history/:itemCode`
 
 ประวัติการซื้อ (trans_flag=12, last_status=0)

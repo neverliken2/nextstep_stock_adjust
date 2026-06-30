@@ -126,6 +126,23 @@ export interface PurchaseHistoryResult {
   has_more: boolean;
 }
 
+export interface ItemLocation {
+  wh_code: string;
+  wh_name: string;
+  shelf_code: string;
+  shelf_name: string;
+  stock_qty: number; // ใน unit_standard
+  old_cost: number;
+}
+
+export interface ItemLocationsResult {
+  success: boolean;
+  message?: string;
+  item?: ItemOption;
+  units?: UnitOption[];
+  locations: ItemLocation[];
+}
+
 // ==================== Import Types ====================
 
 export interface ImportRowInput {
@@ -375,6 +392,45 @@ export async function validateImportRows(
       ok_count: 0,
       error_count: 0,
     };
+  }
+}
+
+// ==================== 7.1 Get Item Locations (Bulk by Location) ====================
+
+/**
+ * คืน list ของ (wh, shelf) ที่สินค้านี้ register ใน ic_wh_shelf
+ * พร้อม stock_qty + old_cost ของแต่ละ wh (cache ฝั่ง backend ต่อ wh)
+ * — ใช้กับ flow ปรับต้นทุนทุกที่เก็บ (1 ใบต่อ wh+shelf)
+ */
+export async function getItemLocations(
+  itemCode: string,
+): Promise<ItemLocationsResult> {
+  const bearer = await getSessionToken();
+  if (!bearer) {
+    return {
+      success: false,
+      message: 'Session หมดอายุ — กรุณา login ใหม่',
+      locations: [],
+    };
+  }
+
+  try {
+    const data = await apiGet<{
+      item: ItemOption | null;
+      units: UnitOption[];
+      locations: ItemLocation[];
+    }>(
+      `/api/v1/stock-adjust/item-locations/${encodeURIComponent(itemCode)}`,
+      bearer,
+    );
+    return {
+      success: true,
+      item: data.item || undefined,
+      units: data.units,
+      locations: data.locations || [],
+    };
+  } catch (err) {
+    return { success: false, message: mapApiError(err), locations: [] };
   }
 }
 
