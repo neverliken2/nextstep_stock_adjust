@@ -398,9 +398,10 @@ export async function validateImportRows(
 // ==================== 7.1 Get Item Locations (Bulk by Location) ====================
 
 /**
- * คืน list ของ (wh, shelf) ที่สินค้านี้ register ใน ic_wh_shelf
+ * คืน list ของ (wh, shelf) ที่สินค้านี้เคยมี transaction ใน ic_trans_detail
  * พร้อม stock_qty + old_cost ของแต่ละ wh (cache ฝั่ง backend ต่อ wh)
  * — ใช้กับ flow ปรับต้นทุนทุกที่เก็บ (1 ใบต่อ wh+shelf)
+ * stock_qty คำนวณสูตรเดียวกับเมนู "ปรับปรุงสินค้า" (getStockAndCost)
  */
 export async function getItemLocations(
   itemCode: string,

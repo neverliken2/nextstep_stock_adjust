@@ -951,7 +951,7 @@ export default function BulkStockAdjustForm() {
                   >
                     {r.status === 'error'
                       ? r.error
-                      : `ไม่อยู่ใน ic_wh_shelf หรือคงเหลือ ≤ 0 ทุกที่ (${r.skipped_zero ?? 0} skipped)`}
+                      : `ไม่มีที่เก็บที่คงเหลือ > 0 (${r.skipped_zero ?? 0} skipped)`}
                   </span>
                 </div>
               ))}
