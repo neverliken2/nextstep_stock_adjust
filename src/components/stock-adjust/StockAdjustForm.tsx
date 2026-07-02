@@ -153,10 +153,16 @@ export default function StockAdjustForm() {
       }
     } else {
       const k = lookupTarget.lineKey;
+      const line = lines.find((l) => l.key === k);
       if (lookupTarget.kind === 'wh') {
+        // shelf reset → ยังไม่ query จนกว่า user เลือก shelf ใหม่
         updateLine(k, { wh_code: opt.code, shelf_code: '' });
       } else {
         updateLine(k, { shelf_code: opt.code });
+        // refetch stock+cost ทันทีเมื่อ shelf เปลี่ยน (คงเหลือ + ทุนเดิม แยกตาม shelf)
+        if (line && line.item_code) {
+          refreshStock({ ...line, shelf_code: opt.code });
+        }
       }
     }
   }
@@ -259,7 +265,7 @@ export default function StockAdjustForm() {
   }
 
   async function onPickItem(item: ItemOption) {
-    const defaults = await getItemDefaults(item.code, whFrom);
+    const defaults = await getItemDefaults(item.code, whFrom, locationFrom);
     const units = defaults.units || [];
     const unitStandard = defaults.item?.unit_standard || item.unit_standard || units[0]?.code || '';
     setLines((prev) => [
@@ -289,7 +295,11 @@ export default function StockAdjustForm() {
   }
 
   async function refreshStock(line: EditableLine) {
-    const defaults = await getItemDefaults(line.item_code, whFrom || line.wh_code);
+    const defaults = await getItemDefaults(
+      line.item_code,
+      line.wh_code || whFrom,
+      line.shelf_code || locationFrom,
+    );
     updateLine(line.key, {
       old_cost: defaults.item?.average_cost ?? line.old_cost,
       stock_qty: defaults.stock_qty ?? 0,

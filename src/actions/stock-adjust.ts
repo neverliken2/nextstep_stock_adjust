@@ -245,6 +245,7 @@ export async function searchItems(
 export async function getItemDefaults(
   itemCode: string,
   whCode: string,
+  shelfCode: string = '',
 ): Promise<ItemDefaultsResult> {
   const bearer = await getSessionToken();
   if (!bearer) {
@@ -259,7 +260,7 @@ export async function getItemDefaults(
     }>(
       `/api/v1/stock-adjust/items/${encodeURIComponent(itemCode)}`,
       bearer,
-      { whCode },
+      { whCode, shelfCode },
     );
     return {
       success: true,
