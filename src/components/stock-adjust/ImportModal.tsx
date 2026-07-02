@@ -79,9 +79,13 @@ export default function ImportModal({
       setGlobalError('กรุณาระบุคลังในหน้า header ก่อน');
       return;
     }
+    if (!shelfCode) {
+      setGlobalError('กรุณาระบุพื้นที่เก็บในหน้า header ก่อน');
+      return;
+    }
     setGlobalError(null);
     startWork(async () => {
-      const res = await validateImportRows(parsedRows, whCode);
+      const res = await validateImportRows(parsedRows, whCode, shelfCode);
       if (!res.success) {
         setGlobalError(res.message || 'ตรวจสอบไม่สำเร็จ');
         return;
@@ -160,10 +164,12 @@ export default function ImportModal({
 
           <div className="flex-1" />
 
-          {!whCode && (
+          {(!whCode || !shelfCode) && (
             <div className="flex items-center gap-1 text-sm text-amber-700">
               <AlertTriangle className="h-4 w-4" />
-              กรุณาระบุคลังในหน้า header ก่อน
+              {!whCode
+                ? 'กรุณาระบุคลังในหน้า header ก่อน'
+                : 'กรุณาระบุพื้นที่เก็บในหน้า header ก่อน'}
             </div>
           )}
         </div>
@@ -290,7 +296,7 @@ export default function ImportModal({
             <button
               type="button"
               onClick={handleValidate}
-              disabled={!canValidate || isWorking || !whCode}
+              disabled={!canValidate || isWorking || !whCode || !shelfCode}
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
               {isWorking ? 'กำลังตรวจสอบ...' : '🔍 ตรวจสอบทั้งหมด'}

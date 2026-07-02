@@ -357,6 +357,7 @@ export async function getPurchaseHistory(
 export async function validateImportRows(
   rows: ImportRowInput[],
   whCode: string,
+  shelfCode: string = '',
 ): Promise<ValidateImportResult> {
   const bearer = await getSessionToken();
   if (!bearer) {
@@ -374,7 +375,7 @@ export async function validateImportRows(
     const data = await apiPost<ValidatedImportRow[]>(
       '/api/v1/stock-adjust/validate-import',
       bearer,
-      { rows, wh_code: whCode },
+      { rows, wh_code: whCode, shelf_code: shelfCode },
     );
     const ok_count = data.filter((r) => r.valid).length;
     return {
