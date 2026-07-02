@@ -203,32 +203,11 @@ export default function BulkStockAdjustForm() {
     [checkedRows],
   );
 
-  /** จำนวนแถวใน preview ของ item ที่ picker เพิ่งเลือก (ไว้แสดง dup warning) */
+  /** จำนวนแถวใน preview ของ item ที่ picker เพิ่งเลือก (แสดงในหน้า picker) */
   const pickerExistingCount = useMemo(() => {
     if (!pickerData) return 0;
     return rows.filter((r) => r.item_code === pickerData.item.code).length;
   }, [pickerData, rows]);
-
-  /** หาว่า item ใดมี wh ซ้ำ (อยู่หลาย shelf ใน wh เดียว) → ต้องเตือน */
-  const itemWhDupes = useMemo(() => {
-    const seen = new Map<string, Set<string>>();
-    const dup = new Map<string, Set<string>>();
-    for (const r of rows) {
-      const s = seen.get(r.item_code) || new Set();
-      if (s.has(r.wh_code)) {
-        const d = dup.get(r.item_code) || new Set();
-        d.add(r.wh_code);
-        dup.set(r.item_code, d);
-      }
-      s.add(r.wh_code);
-      seen.set(r.item_code, s);
-    }
-    return dup;
-  }, [rows]);
-
-  function isRowDupWh(r: PreviewRow): boolean {
-    return itemWhDupes.get(r.item_code)?.has(r.wh_code) ?? false;
-  }
 
   function resetImport() {
     setRows([]);
@@ -985,22 +964,6 @@ export default function BulkStockAdjustForm() {
             </div>
           </div>
 
-          {itemWhDupes.size > 0 && (
-            <div className="mb-3 flex items-start gap-2 rounded-lg bg-yellow-50 p-3 text-sm text-yellow-800">
-              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-              <div>
-                <div className="font-semibold">
-                  พบ item ที่มีหลายพื้นที่ในคลังเดียวกัน
-                </div>
-                <div className="text-xs">
-                  stock + ทุนเฉลี่ย track ระดับ <b>คลัง</b> ไม่ใช่พื้นที่ —
-                  ถ้าบันทึกหลายใบใน wh เดียวกันสำหรับ item เดียวกัน → avg cost
-                  จะถูกปรับซ้อน (overshoot เกินเป้า) แถวที่ทำให้เกิดเคสนี้ขึ้นพื้นสีเหลือง
-                </div>
-              </div>
-            </div>
-          )}
-
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-600">
@@ -1029,7 +992,6 @@ export default function BulkStockAdjustForm() {
                       docNumber={gi + 1}
                       groupSum={groupSum}
                       amountDecimal={amountDecimal}
-                      isRowDupWh={isRowDupWh}
                       onToggleRow={toggleRow}
                       onToggleGroup={(check) =>
                         toggleGroup(g.wh_code, g.shelf_code, check)
@@ -1273,7 +1235,6 @@ interface GroupBlockProps {
   docNumber: number;
   groupSum: number;
   amountDecimal: number;
-  isRowDupWh: (r: PreviewRow) => boolean;
   onToggleRow: (key: number) => void;
   onToggleGroup: (check: boolean) => void;
 }
@@ -1283,7 +1244,6 @@ function GroupBlock({
   docNumber,
   groupSum,
   amountDecimal,
-  isRowDupWh,
   onToggleRow,
   onToggleGroup,
 }: GroupBlockProps) {
@@ -1320,12 +1280,8 @@ function GroupBlock({
       {group.rows.map((r) => {
         const qty = rowQty(r);
         const sum = rowSumAmount(r);
-        const dup = isRowDupWh(r);
         return (
-          <tr
-            key={r.key}
-            className={`border-t ${dup ? 'bg-yellow-50/60' : ''}`}
-          >
+          <tr key={r.key} className="border-t">
             <td className="px-2 py-1 text-center">
               <input
                 type="checkbox"
