@@ -21,7 +21,11 @@ import {
   type ItemOption,
   type UnitOption,
 } from '@/actions/stock-adjust';
-import { downloadTemplate, parseExcel, type ImportRow } from '@/lib/excel';
+import {
+  downloadTemplate,
+  parseImportFile,
+  type ImportRow,
+} from '@/lib/excel';
 import DateInputDDMMYYYY from '@/components/ui/DateInputDDMMYYYY';
 import ItemPickerModal from './ItemPickerModal';
 
@@ -227,7 +231,7 @@ export default function BulkStockAdjustForm() {
 
     let parsed: { rows: ImportRow[]; warning?: string };
     try {
-      parsed = await parseExcel(file);
+      parsed = await parseImportFile(file);
     } catch (err: unknown) {
       setImportMsg({
         kind: 'error',
@@ -663,7 +667,7 @@ export default function BulkStockAdjustForm() {
       <div className="rounded-xl bg-white p-4 shadow-sm">
         <h2 className="mb-3 flex items-center gap-2 text-base font-semibold text-gray-800">
           <Layers className="h-5 w-5 text-purple-600" />
-          ปรับต้นทุนทุกที่เก็บ (Bulk IA by Location) — Excel Import
+          ปรับต้นทุนทุกที่เก็บ (Bulk IA by Location) — Import
         </h2>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -719,7 +723,7 @@ export default function BulkStockAdjustForm() {
       <div className="rounded-xl bg-white p-4 shadow-sm">
         <h3 className="mb-3 flex items-center gap-2 text-base font-semibold text-gray-800">
           <FileSpreadsheet className="h-5 w-5 text-purple-600" />
-          Import จาก Excel
+          Import จาก Excel/CSV/TSV
         </h3>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -734,11 +738,11 @@ export default function BulkStockAdjustForm() {
 
           <label className="flex cursor-pointer items-center gap-2 rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium text-white hover:bg-purple-700">
             <Upload className="h-4 w-4" />
-            เลือกไฟล์ Excel
+            เลือกไฟล์ (Excel/CSV/TSV)
             <input
               ref={fileInputRef}
               type="file"
-              accept=".xlsx"
+              accept=".xlsx,.csv,.tsv,.txt"
               onChange={handleFile}
               className="hidden"
               disabled={isImporting || isSaving}
