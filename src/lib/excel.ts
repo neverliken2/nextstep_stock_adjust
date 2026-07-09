@@ -1,7 +1,9 @@
 /**
- * Excel helpers สำหรับ Stock Adjust import
+ * Import helpers สำหรับ Stock Adjust
  * - downloadTemplate: gen .xlsx template ให้ user ดาวน์โหลด
- * - parseExcel: อ่านไฟล์ .xlsx (client-side) → array of rows
+ * - parseExcel: อ่าน .xlsx → ImportRow[]
+ * - parseTextFile: อ่าน .csv/.tsv/.txt (auto-detect TAB/comma) → ImportRow[]
+ * - parseImportFile: เลือก parser จากนามสกุลไฟล์
  *
  * Template format:
  *   col A: รหัสสินค้า          (item_code)
@@ -22,6 +24,23 @@ export const MAX_IMPORT_ROWS = 1000;
 export const MAX_FILE_SIZE_MB = 5;
 
 const HEADERS = ['รหัสสินค้า', 'รหัสหน่วยนับ', 'ทุนเฉลี่ยที่ต้องการ'];
+
+const TEXT_EXTENSIONS = ['.csv', '.tsv', '.txt'] as const;
+
+/** เลือก parser จากนามสกุลไฟล์ — .xlsx → Excel, อื่นๆ → text */
+export async function parseImportFile(file: File): Promise<{
+  rows: ImportRow[];
+  warning?: string;
+}> {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.xlsx')) return parseExcel(file);
+  if (TEXT_EXTENSIONS.some((ext) => name.endsWith(ext))) {
+    return parseTextFile(file);
+  }
+  throw new Error(
+    `รองรับเฉพาะไฟล์ .xlsx / ${TEXT_EXTENSIONS.join(' / ')}`,
+  );
+}
 
 /** Generate template + trigger browser download */
 export function downloadTemplate(): void {
@@ -65,10 +84,48 @@ export async function parseExcel(file: File): Promise<{
     defval: '',
   });
 
+  return rowsFromGrid(raw);
+}
+
+/** Parse .csv/.tsv/.txt → ImportRow[] (auto-detect TAB/comma) */
+export async function parseTextFile(file: File): Promise<{
+  rows: ImportRow[];
+  warning?: string;
+}> {
+  if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+    throw new Error(`ไฟล์ใหญ่เกิน ${MAX_FILE_SIZE_MB}MB`);
+  }
+
+  // read as UTF-8; strip BOM ถ้ามี
+  const text = (await file.text()).replace(/^﻿/, '');
+  const lines = text.split(/\r?\n/);
+
+  // pick delimiter จากบรรทัดแรกที่ไม่ว่าง
+  const firstNonEmpty = lines.find((l) => l.trim().length > 0);
+  if (!firstNonEmpty) throw new Error('ไฟล์ว่าง');
+  const delimiter = firstNonEmpty.includes('\t')
+    ? '\t'
+    : firstNonEmpty.includes(',')
+      ? ','
+      : null;
+  if (!delimiter) {
+    throw new Error('ไม่พบตัวคั่น (TAB หรือ comma) ในบรรทัดแรก');
+  }
+
+  const grid: string[][] = lines.map((line) => line.split(delimiter));
+  return rowsFromGrid(grid);
+}
+
+/** Grid → ImportRow[] (ใช้ร่วมระหว่าง Excel + text parser) */
+function rowsFromGrid(raw: unknown[][]): {
+  rows: ImportRow[];
+  warning?: string;
+} {
   if (raw.length === 0) throw new Error('ไฟล์ว่าง');
 
-  // หา header row (row แรกที่ match HEADERS) — รองรับ header ที่มี whitespace
   const trim = (v: unknown): string => String(v ?? '').trim();
+
+  // หา header row (row แรกที่ match HEADERS) — รองรับ header ที่มี whitespace
   let headerIdx = -1;
   for (let i = 0; i < Math.min(raw.length, 5); i++) {
     const cells = (raw[i] || []).map(trim);
@@ -83,9 +140,7 @@ export async function parseExcel(file: File): Promise<{
     }
   }
   if (headerIdx < 0) {
-    throw new Error(
-      `Header ไม่ตรง — แถวแรกต้องเป็น: ${HEADERS.join(' | ')}`
-    );
+    throw new Error(`Header ไม่ตรง — แถวแรกต้องเป็น: ${HEADERS.join(' | ')}`);
   }
 
   const rows: ImportRow[] = [];
@@ -97,14 +152,19 @@ export async function parseExcel(file: File): Promise<{
     const newCostRaw = r[2];
 
     // skip empty row
-    if (!itemCode && !unitCode && (newCostRaw === '' || newCostRaw === null || newCostRaw === undefined)) {
+    if (
+      !itemCode &&
+      !unitCode &&
+      (newCostRaw === '' || newCostRaw === null || newCostRaw === undefined)
+    ) {
       continue;
     }
 
     dataIdx++;
-    const newCost = typeof newCostRaw === 'number'
-      ? newCostRaw
-      : parseFloat(String(newCostRaw).trim().replace(/,/g, ''));
+    const newCost =
+      typeof newCostRaw === 'number'
+        ? newCostRaw
+        : parseFloat(String(newCostRaw).trim().replace(/,/g, ''));
 
     rows.push({
       row_index: dataIdx,

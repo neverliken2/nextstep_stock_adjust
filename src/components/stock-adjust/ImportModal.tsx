@@ -3,7 +3,7 @@
 import { useRef, useState, useTransition } from 'react';
 import { X, Download, Upload, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 import { validateImportRows, type ValidatedImportRow } from '@/actions/stock-adjust';
-import { downloadTemplate, parseExcel, type ImportRow } from '@/lib/excel';
+import { downloadTemplate, parseImportFile, type ImportRow } from '@/lib/excel';
 
 interface Props {
   open: boolean;
@@ -56,7 +56,7 @@ export default function ImportModal({
     setGlobalError(null);
     setWarning(null);
     try {
-      const { rows, warning: w } = await parseExcel(file);
+      const { rows, warning: w } = await parseImportFile(file);
       setParsedRows(rows);
       setValidated(
         rows.map((r) => ({
@@ -142,11 +142,11 @@ export default function ImportModal({
             className="flex items-center gap-2 rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium text-white hover:bg-purple-700 cursor-pointer"
           >
             <Upload className="h-4 w-4" />
-            เลือกไฟล์ Excel
+            เลือกไฟล์ (Excel/CSV/TSV)
             <input
               ref={fileInputRef}
               type="file"
-              accept=".xlsx"
+              accept=".xlsx,.csv,.tsv,.txt"
               onChange={handleFile}
               className="hidden"
             />
@@ -205,7 +205,7 @@ export default function ImportModal({
         <div className="flex-1 overflow-auto p-4">
           {validated.length === 0 && (
             <div className="text-center text-sm text-gray-400 py-12">
-              ยังไม่มีข้อมูล — ดาวน์โหลด Template แล้ว upload กลับมา
+              ยังไม่มีข้อมูล — ดาวน์โหลด Template หรือใช้ไฟล์ CSV/TSV ที่มีหัวคอลัมน์ตรงกัน
             </div>
           )}
           {validated.length > 0 && (
