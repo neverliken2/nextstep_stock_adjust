@@ -6,12 +6,21 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { useTheme } from '@/context/ThemeContext';
 import { useSidebar } from '@/context/SidebarContext';
+import { useAuth } from '@/context/AuthContext';
 import { menuItems } from '@/config/menuConfig';
 
 export default function Sidebar() {
   const pathname = usePathname();
   const { config } = useTheme();
   const { isCollapsed, isMobile, isOpen, closeSidebar } = useSidebar();
+  const { user } = useAuth();
+
+  // filter เมนูตามสิทธิ์จาก login (requires undefined = แสดงเสมอ)
+  const visibleItems = menuItems.filter(
+    (item) =>
+      !item.requires ||
+      (item.requires === 'stock_balance' && user?.can_stock_balance),
+  );
 
   const sidebarWidth = isMobile ? 'w-64' : (isCollapsed ? 'w-16' : 'w-64');
 
@@ -50,13 +59,13 @@ export default function Sidebar() {
 
         <nav className="h-[calc(100vh-5rem)] overflow-y-auto px-3 py-4">
           <ul className="space-y-2">
-            {menuItems.map((item) => {
+            {visibleItems.map((item) => {
               const Icon = item.icon;
               const isPrefix =
                 pathname === item.href || pathname.startsWith(item.href + '/');
               // ถ้าเมนูอื่นมี href ที่ match ลึกกว่า → ไม่ถือว่าเมนูนี้ active
               // กันเคส parent (/stock-adjust) ติด active พร้อม child (/stock-adjust/bulk)
-              const hasDeeperMatch = menuItems.some(
+              const hasDeeperMatch = visibleItems.some(
                 (o) =>
                   o.href !== item.href &&
                   o.href.length > item.href.length &&

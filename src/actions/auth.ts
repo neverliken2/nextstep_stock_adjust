@@ -35,6 +35,8 @@ export interface LoginResult {
   databases?: DatabaseOption[];
   /** true = ต้องไปหน้า /select-database (มี > 0 DBs); false = ไม่มี DB (no-op) */
   needSelectDatabase?: boolean;
+  /** สิทธิ์เมนู "สินค้า/วัตถุดิบ คงเหลือยกมา" (menu_ic_stk_balance) */
+  canStockBalance?: boolean;
 }
 
 export interface SelectDatabaseResult {
@@ -61,6 +63,8 @@ interface LoginResponse {
   preSelectExpiresIn: number;
   user: SmlnesUserInfo;
   databases: SmlnesDatabaseInfo[];
+  /** smlnesservice ≥ 0.6.0 — สิทธิ์เมนูย่อยของ client stock-adjust */
+  permissions?: { canStockBalance: boolean };
 }
 
 interface SelectDatabaseResponse {
@@ -147,6 +151,7 @@ export async function loginUser(
     },
     databases,
     needSelectDatabase: databases.length > 0,
+    canStockBalance: response.permissions?.canStockBalance ?? false,
   };
 }
 

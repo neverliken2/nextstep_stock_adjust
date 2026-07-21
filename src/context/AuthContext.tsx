@@ -22,6 +22,8 @@ export interface User {
   data_group: string;
   selected_database?: string;
   selected_database_name?: string;
+  /** สิทธิ์เมนู "สินค้า/วัตถุดิบ คงเหลือยกมา" (menu_ic_stk_balance) — จาก login response */
+  can_stock_balance?: boolean;
 }
 
 interface AuthContextType {
@@ -140,6 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           user_level: result.user.user_level || 0,
           provider,
           data_group: dataGroup,
+          can_stock_balance: result.canStockBalance ?? false,
         };
         
         // Session cookie ถูกสร้างใน loginUser แล้ว

@@ -20,10 +20,30 @@ export interface ImportRow {
   new_cost: number;
 }
 
+/** แถว import ของเมนู "สินค้า/วัตถุดิบ คงเหลือยกมา" (RMB) */
+export interface BalanceImportRow {
+  row_index: number;
+  item_code: string;
+  unit_code: string;
+  wh_code: string;
+  shelf_code: string;
+  qty: number;
+  cost: number;
+}
+
 export const MAX_IMPORT_ROWS = 1000;
 export const MAX_FILE_SIZE_MB = 5;
 
 const HEADERS = ['รหัสสินค้า', 'รหัสหน่วยนับ', 'ทุนเฉลี่ยที่ต้องการ'];
+
+const BALANCE_HEADERS = [
+  'รหัสสินค้า',
+  'รหัสหน่วยนับ',
+  'คลัง',
+  'ที่เก็บ',
+  'จำนวน',
+  'ต้นทุน/หน่วย',
+];
 
 const TEXT_EXTENSIONS = ['.csv', '.tsv', '.txt'] as const;
 
@@ -65,6 +85,64 @@ export async function parseExcel(file: File): Promise<{
   rows: ImportRow[];
   warning?: string;
 }> {
+  return rowsFromGrid(await gridFromExcel(file));
+}
+
+/** Parse .csv/.tsv/.txt → ImportRow[] (auto-detect TAB/comma) */
+export async function parseTextFile(file: File): Promise<{
+  rows: ImportRow[];
+  warning?: string;
+}> {
+  return rowsFromGrid(await gridFromText(file));
+}
+
+// ──────────────────────────── Balance (RMB) import ────────────────────────────
+
+/** เลือก parser จากนามสกุลไฟล์ — สำหรับเมนูคงเหลือยกมา (4 คอลัมน์) */
+export async function parseBalanceImportFile(file: File): Promise<{
+  rows: BalanceImportRow[];
+  warning?: string;
+}> {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.xlsx')) {
+    return balanceRowsFromGrid(await gridFromExcel(file));
+  }
+  if (TEXT_EXTENSIONS.some((ext) => name.endsWith(ext))) {
+    return balanceRowsFromGrid(await gridFromText(file));
+  }
+  throw new Error(
+    `รองรับเฉพาะไฟล์ .xlsx / ${TEXT_EXTENSIONS.join(' / ')}`,
+  );
+}
+
+/** Generate template คงเหลือยกมา + trigger browser download */
+export function downloadBalanceTemplate(): void {
+  const data: (string | number)[][] = [
+    BALANCE_HEADERS,
+    ['01-0086', 'ชิ้น', 'MMA01', 'SH101', 100, 450],
+    ['01-0009', 'ลัง24', 'MMA01', 'SH102', 5, 1200],
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws['!cols'] = [
+    { wch: 18 },
+    { wch: 14 },
+    { wch: 10 },
+    { wch: 10 },
+    { wch: 10 },
+    { wch: 12 },
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Stock_Balance');
+
+  XLSX.writeFile(wb, 'stock_balance_template.xlsx');
+}
+
+// ──────────────────────────── Shared grid readers ────────────────────────────
+
+/** อ่าน .xlsx → grid (แถว × คอลัมน์) */
+async function gridFromExcel(file: File): Promise<unknown[][]> {
   if (!file.name.toLowerCase().endsWith('.xlsx')) {
     throw new Error('รองรับเฉพาะไฟล์ .xlsx');
   }
@@ -78,20 +156,15 @@ export async function parseExcel(file: File): Promise<{
   if (!sheetName) throw new Error('ไม่พบ sheet ในไฟล์');
   const ws = wb.Sheets[sheetName];
 
-  const raw = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+  return XLSX.utils.sheet_to_json<unknown[]>(ws, {
     header: 1,
     raw: true,
     defval: '',
   });
-
-  return rowsFromGrid(raw);
 }
 
-/** Parse .csv/.tsv/.txt → ImportRow[] (auto-detect TAB/comma) */
-export async function parseTextFile(file: File): Promise<{
-  rows: ImportRow[];
-  warning?: string;
-}> {
+/** อ่าน .csv/.tsv/.txt → grid (auto-detect TAB/comma) */
+async function gridFromText(file: File): Promise<string[][]> {
   if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
     throw new Error(`ไฟล์ใหญ่เกิน ${MAX_FILE_SIZE_MB}MB`);
   }
@@ -112,8 +185,7 @@ export async function parseTextFile(file: File): Promise<{
     throw new Error('ไม่พบตัวคั่น (TAB หรือ comma) ในบรรทัดแรก');
   }
 
-  const grid: string[][] = lines.map((line) => line.split(delimiter));
-  return rowsFromGrid(grid);
+  return lines.map((line) => line.split(delimiter));
 }
 
 /** Grid → ImportRow[] (ใช้ร่วมระหว่าง Excel + text parser) */
@@ -171,6 +243,86 @@ function rowsFromGrid(raw: unknown[][]): {
       item_code: itemCode,
       unit_code: unitCode,
       new_cost: Number.isFinite(newCost) ? newCost : NaN,
+    });
+  }
+
+  let warning: string | undefined;
+  if (rows.length > MAX_IMPORT_ROWS) {
+    warning = `เกินขีดจำกัด ${MAX_IMPORT_ROWS} บรรทัด — ตัดเหลือ ${MAX_IMPORT_ROWS}`;
+    rows.length = MAX_IMPORT_ROWS;
+  }
+  if (rows.length === 0) {
+    throw new Error('ไม่พบบรรทัดข้อมูล');
+  }
+
+  return { rows, warning };
+}
+
+/** Grid → BalanceImportRow[] (เมนูคงเหลือยกมา — 6 คอลัมน์ รวมคลัง/ที่เก็บ) */
+function balanceRowsFromGrid(raw: unknown[][]): {
+  rows: BalanceImportRow[];
+  warning?: string;
+} {
+  if (raw.length === 0) throw new Error('ไฟล์ว่าง');
+
+  const trim = (v: unknown): string => String(v ?? '').trim();
+  const num = (v: unknown): number =>
+    typeof v === 'number'
+      ? v
+      : parseFloat(String(v).trim().replace(/,/g, ''));
+
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(raw.length, 5); i++) {
+    const cells = (raw[i] || []).map(trim);
+    if (
+      cells.length >= BALANCE_HEADERS.length &&
+      BALANCE_HEADERS.every((h, c) => cells[c] === h)
+    ) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx < 0) {
+    throw new Error(
+      `Header ไม่ตรง — แถวแรกต้องเป็น: ${BALANCE_HEADERS.join(' | ')}`,
+    );
+  }
+
+  const rows: BalanceImportRow[] = [];
+  let dataIdx = 0;
+  for (let i = headerIdx + 1; i < raw.length; i++) {
+    const r = raw[i] || [];
+    const itemCode = trim(r[0]);
+    const unitCode = trim(r[1]);
+    const whCode = trim(r[2]);
+    const shelfCode = trim(r[3]);
+    const qtyRaw = r[4];
+    const costRaw = r[5];
+
+    // skip empty row
+    if (
+      !itemCode &&
+      !unitCode &&
+      !whCode &&
+      !shelfCode &&
+      trim(qtyRaw) === '' &&
+      trim(costRaw) === ''
+    ) {
+      continue;
+    }
+
+    dataIdx++;
+    const qty = num(qtyRaw);
+    const cost = num(costRaw);
+
+    rows.push({
+      row_index: dataIdx,
+      item_code: itemCode,
+      unit_code: unitCode,
+      wh_code: whCode.toUpperCase(),
+      shelf_code: shelfCode.toUpperCase(),
+      qty: Number.isFinite(qty) ? qty : NaN,
+      cost: Number.isFinite(cost) ? cost : NaN,
     });
   }
 
