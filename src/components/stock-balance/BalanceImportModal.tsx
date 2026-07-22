@@ -97,18 +97,20 @@ export default function BalanceImportModal({ open, onClose, onImport }: Props) {
   }
 
   function handleImport() {
-    // Strict mode: block ถ้ามีบรรทัดผิด
-    if (errorCount > 0) {
-      setGlobalError('มีบรรทัดผิดพลาด — แก้ไขไฟล์แล้ว upload ใหม่');
+    // ยืดหยุ่น: เพิ่มเฉพาะบรรทัดที่ผ่าน — บรรทัดผิดข้ามไป (user เห็นในตารางว่าตัวไหนตก)
+    const okRows = validated.filter((v) => v.valid);
+    if (okRows.length === 0) {
+      setGlobalError('ไม่มีบรรทัดที่ผ่านการตรวจสอบ');
       return;
     }
-    onImport(validated.filter((v) => v.valid));
+    onImport(okRows);
     reset();
     onClose();
   }
 
   const canValidate = step === 'parsed' && parsedRows.length > 0;
-  const canImport = step === 'validated' && errorCount === 0 && okCount > 0;
+  // ผ่านอย่างน้อย 1 บรรทัดก็เพิ่มได้ (ตัวผิดถูกข้าม)
+  const canImport = step === 'validated' && okCount > 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -285,11 +287,12 @@ export default function BalanceImportModal({ open, onClose, onImport }: Props) {
               className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
               title={
                 errorCount > 0
-                  ? 'มีบรรทัดผิดพลาด — แก้ไขไฟล์แล้ว upload ใหม่'
+                  ? `ข้าม ${errorCount} บรรทัดที่ผิด — เพิ่มเฉพาะ ${okCount} บรรทัดที่ผ่าน`
                   : ''
               }
             >
-              ➕ เพิ่ม {okCount} บรรทัดเข้า Grid
+              ➕ เพิ่ม {okCount} บรรทัดที่ผ่านเข้า Grid
+              {errorCount > 0 ? ` (ข้าม ${errorCount})` : ''}
             </button>
           )}
         </div>
