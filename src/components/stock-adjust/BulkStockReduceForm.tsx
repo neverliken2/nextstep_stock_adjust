@@ -1,9 +1,29 @@
 'use client';
 
+/**
+ * ปรับปรุงสต็อกสินค้า (ลด) — เอกสาร IS (trans_flag=68, calc_flag=−1)
+ *
+ * ต่างจาก BulkStockAdjustForm (IA) ตรงที่เป็นการ **ตัดสต็อกออกจริง**:
+ *   - Excel ระบุ "จำนวนที่ลด" รวม (ไม่ระบุคลัง/ที่เก็บ)
+ *   - หน้าจอไล่ตัดจากที่เก็บที่ **มีของมากสุดก่อน** จนครบจำนวน
+ *   - ทุน/หน่วยดึงจากทุนเฉลี่ยปัจจุบันของแต่ละที่เก็บอัตโนมัติ (ไม่ให้กรอก)
+ *   - ถ้าคงเหลือรวมทุกที่เก็บไม่พอ → error ทั้งแถว ไม่ตัดบางส่วน
+ *   - 1 ใบเอกสารต่อ (คลัง, ที่เก็บ) เหมือนหน้า IA
+ *
+ * ── หน่วยนับ ──
+ * `location.stock_qty` และ `location.old_cost` จาก API อยู่ในหน่วย **unit_standard**
+ * ส่วน user กรอกจำนวนในหน่วยที่เลือก จึงคำนวณโดยแปลงเข้า unit_standard ก่อนเสมอ:
+ *   ratio      = stand_value / divide_value ของหน่วยที่เลือก
+ *   qty_std    = จำนวนที่กรอก × ratio
+ *   unit_cost  = old_cost × ratio        (ทุนต่อ 1 หน่วยที่เลือก)
+ *   sum_amount = qty_unit × unit_cost = qty_std × old_cost  ✓
+ * ค่าที่ส่งลง DB เป็นหน่วยที่เลือก (qty, price) แล้ว SML คูณ stand/divide กลับเอง
+ */
+
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   Save,
-  Layers,
+  TrendingDown,
   AlertTriangle,
   CheckCircle2,
   XCircle,
@@ -16,15 +36,15 @@ import {
 import {
   getErpOption,
   getItemLocations,
-  saveStockAdjust,
+  saveStockAdjustReduce,
   type ItemLocation,
   type ItemOption,
   type UnitOption,
 } from '@/actions/stock-adjust';
 import {
-  downloadTemplate,
-  parseImportFile,
-  type ImportRow,
+  downloadReduceTemplate,
+  parseReduceImportFile,
+  type ReduceImportRow,
 } from '@/lib/excel';
 import DateInputDDMMYYYY from '@/components/ui/DateInputDDMMYYYY';
 import ItemPickerModal from './ItemPickerModal';
@@ -38,36 +58,42 @@ import {
   nowHHMM,
   todayISO,
 } from './bulkShared';
+import {
+  allocateReduce,
+  roundQty,
+  totalAvailable,
+} from '@/lib/stock-reduce-allocate';
 
-/** 1 แถวใน preview = 1 (item × location) — N แถวที่ wh+shelf เดียวกันจะรวมเป็น 1 ใบเอกสาร */
+/** 1 แถวใน preview = 1 (item × ที่เก็บ) ที่ระบบจัดสรรจำนวนให้แล้ว */
 interface PreviewRow {
   key: number;
-  row_index: number; // ลำดับใน Excel (debug/error reference)
+  row_index: number; // ลำดับใน Excel (-1 = เพิ่มเอง)
   item_code: string;
   item_name: string;
   unit_code: string;
   unit_standard: string;
-  new_cost: number;
   stand_value: number;
   divide_value: number;
   wh_code: string;
   wh_name: string;
   shelf_code: string;
   shelf_name: string;
-  stock_qty: number; // ใน unit_standard
-  old_cost: number;
+  /** คงเหลือของที่เก็บนี้ — หน่วยที่เลือก */
+  available_qty: number;
+  /** จำนวนที่จะตัดจากที่เก็บนี้ — หน่วยที่เลือก (user แก้ได้) */
+  reduce_qty: number;
+  /** ทุนเฉลี่ยปัจจุบัน — ต่อ 1 หน่วยที่เลือก */
+  unit_cost: number;
   checked: boolean;
 }
 
-/** Item-level result (สำหรับ error display + sanity) */
 interface ItemResult {
   row_index: number;
   item_code: string;
-  status: 'error' | 'no-locations' | 'ok';
+  status: 'error' | 'ok';
   error?: string;
   item_name?: string;
-  /** จำนวน location ที่ skip เพราะ stock_qty ≤ 0 */
-  skipped_zero?: number;
+  /** จำนวนที่เก็บที่ถูกใช้ตัด */
   location_count?: number;
 }
 
@@ -92,13 +118,13 @@ interface SaveOutcome {
 let rowCounter = 0;
 const nextKey = () => ++rowCounter;
 
-function rowQty(r: PreviewRow): number {
-  const ratio = (r.stand_value || 1) / (r.divide_value || 1);
-  return r.stock_qty / (ratio || 1);
+/** stand/divide ของหน่วยที่เลือก — 1 หน่วยนี้ = ratio unit_standard */
+function unitRatio(u: Pick<UnitOption, 'stand_value' | 'divide_value'>): number {
+  return (u.stand_value || 1) / (u.divide_value || 1) || 1;
 }
 
 function rowSumAmount(r: PreviewRow): number {
-  return (Number(r.new_cost) - Number(r.old_cost)) * rowQty(r);
+  return r.reduce_qty * r.unit_cost;
 }
 
 function groupByWhShelf(rows: PreviewRow[]): DocGroup[] {
@@ -121,7 +147,7 @@ function groupByWhShelf(rows: PreviewRow[]): DocGroup[] {
   return Array.from(map.values());
 }
 
-export default function BulkStockAdjustForm() {
+export default function BulkStockReduceForm() {
   // ── Header ──
   const [docDate, setDocDate] = useState<string>(todayISO());
   const [docTime, setDocTime] = useState<string>(nowHHMM());
@@ -139,7 +165,7 @@ export default function BulkStockAdjustForm() {
   const [loadProgress, setLoadProgress] = useState<{
     done: number;
     total: number;
-    startedAt: number; // ms timestamp
+    startedAt: number;
   } | null>(null);
   const [isImporting, startImporting] = useTransition();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -153,7 +179,7 @@ export default function BulkStockAdjustForm() {
     locations: ItemLocation[];
   } | null>(null);
   const [pickerUnitCode, setPickerUnitCode] = useState<string>('');
-  const [pickerNewCost, setPickerNewCost] = useState<number>(0);
+  const [pickerQty, setPickerQty] = useState<number>(0);
   const [isPickerLoading, startPickerLoading] = useTransition();
   const [isAdding, startAdding] = useTransition();
 
@@ -185,18 +211,27 @@ export default function BulkStockAdjustForm() {
   const [isSaving, startSaving] = useTransition();
 
   // ── Derived ──
-  const checkedRows = useMemo(() => rows.filter((r) => r.checked), [rows]);
+  const checkedRows = useMemo(
+    () => rows.filter((r) => r.checked && r.reduce_qty > 0),
+    [rows],
+  );
   const docGroups = useMemo(() => groupByWhShelf(checkedRows), [checkedRows]);
   const totalAmount = useMemo(
     () => checkedRows.reduce((s, r) => s + rowSumAmount(r), 0),
     [checkedRows],
   );
 
-  /** จำนวนแถวใน preview ของ item ที่ picker เพิ่งเลือก (แสดงในหน้า picker) */
+  /** จำนวนแถวใน preview ของ item ที่ picker เพิ่งเลือก */
   const pickerExistingCount = useMemo(() => {
     if (!pickerData) return 0;
     return rows.filter((r) => r.item_code === pickerData.item.code).length;
   }, [pickerData, rows]);
+
+  /** แถวที่ user แก้จำนวนจนเกินคงเหลือ — กันไว้ก่อนกดบันทึก */
+  const overCount = useMemo(
+    () => rows.filter((r) => r.checked && r.reduce_qty > r.available_qty).length,
+    [rows],
+  );
 
   function resetImport() {
     setRows([]);
@@ -214,9 +249,9 @@ export default function BulkStockAdjustForm() {
     if (!file) return;
     resetImport();
 
-    let parsed: { rows: ImportRow[]; warning?: string };
+    let parsed: { rows: ReduceImportRow[]; warning?: string };
     try {
-      parsed = await parseImportFile(file);
+      parsed = await parseReduceImportFile(file);
     } catch (err: unknown) {
       setImportMsg({
         kind: 'error',
@@ -225,8 +260,8 @@ export default function BulkStockAdjustForm() {
       return;
     }
 
-    // dedupe by item_code — ใช้แถวล่าสุด (cost ค่าหลังสุดชนะ)
-    const dedup = new Map<string, ImportRow>();
+    // dedupe by item_code — ใช้แถวล่าสุด
+    const dedup = new Map<string, ReduceImportRow>();
     const dupSet = new Set<string>();
     for (const r of parsed.rows) {
       const code = r.item_code.trim();
@@ -237,33 +272,31 @@ export default function BulkStockAdjustForm() {
       if (dedup.has(code)) dupSet.add(code);
       dedup.set(code, r);
     }
-    const uniqueRows = Array.from(dedup.values());
 
     startImporting(async () => {
-      await processRows(uniqueRows, dupSet, parsed.warning);
+      await processRows(Array.from(dedup.values()), dupSet, parsed.warning);
     });
   }
 
   async function processRows(
-    rows: ImportRow[],
+    importRows: ReduceImportRow[],
     duplicates: Set<string>,
     parseWarning?: string,
   ) {
     const startedAt = Date.now();
-    setLoadProgress({ done: 0, total: rows.length, startedAt });
+    setLoadProgress({ done: 0, total: importRows.length, startedAt });
     const results: ItemResult[] = [];
     const preview: PreviewRow[] = [];
 
     const BATCH = 5;
-    for (let i = 0; i < rows.length; i += BATCH) {
-      const slice = rows.slice(i, i + BATCH);
+    for (let i = 0; i < importRows.length; i += BATCH) {
+      const slice = importRows.slice(i, i + BATCH);
       await Promise.all(
         slice.map(async (r) => {
           const itemCode = (r.item_code || '').trim();
           const unitCode = (r.unit_code || '').trim();
-          const newCost = Number(r.new_cost);
+          const wantQty = Number(r.reduce_qty);
 
-          // basic validation
           if (!itemCode) {
             results.push({
               row_index: r.row_index,
@@ -282,26 +315,25 @@ export default function BulkStockAdjustForm() {
             });
             return;
           }
-          if (!Number.isFinite(newCost)) {
+          if (!Number.isFinite(wantQty)) {
             results.push({
               row_index: r.row_index,
               item_code: itemCode,
               status: 'error',
-              error: 'ทุนผิด format',
+              error: 'จำนวนผิด format',
             });
             return;
           }
-          if (newCost < 0) {
+          if (wantQty <= 0) {
             results.push({
               row_index: r.row_index,
               item_code: itemCode,
               status: 'error',
-              error: 'ทุนติดลบ',
+              error: 'จำนวนที่ลดต้องมากกว่า 0',
             });
             return;
           }
 
-          // fetch locations
           const res = await getItemLocations(itemCode);
           if (!res.success) {
             results.push({
@@ -322,8 +354,7 @@ export default function BulkStockAdjustForm() {
             return;
           }
 
-          const units = res.units || [];
-          const unit = units.find((u) => u.code === unitCode);
+          const unit = (res.units || []).find((u) => u.code === unitCode);
           if (!unit) {
             results.push({
               row_index: r.row_index,
@@ -335,20 +366,16 @@ export default function BulkStockAdjustForm() {
             return;
           }
 
-          // skip stock_qty ≤ 0
-          const positive = (res.locations as ItemLocation[]).filter(
-            (l) => l.stock_qty > 0,
-          );
-          const skipped = res.locations.length - positive.length;
-
-          if (positive.length === 0) {
+          const ratio = unitRatio(unit);
+          const allocations = allocateReduce(wantQty * ratio, res.locations);
+          if (!allocations) {
+            const totalStd = totalAvailable(res.locations);
             results.push({
               row_index: r.row_index,
               item_code: itemCode,
-              status: 'no-locations',
+              status: 'error',
               item_name: res.item.name,
-              skipped_zero: skipped,
-              location_count: 0,
+              error: `คงเหลือรวมไม่พอ — มี ${formatMoney(totalStd / ratio)} ${unitCode} แต่ขอตัด ${formatMoney(wantQty)} ${unitCode}`,
             });
             return;
           }
@@ -358,12 +385,11 @@ export default function BulkStockAdjustForm() {
             item_code: itemCode,
             status: 'ok',
             item_name: res.item.name,
-            skipped_zero: skipped,
-            location_count: positive.length,
+            location_count: allocations.length,
           });
 
           const unitStd = res.item.unit_standard || unit.code;
-          for (const loc of positive) {
+          for (const a of allocations) {
             preview.push({
               key: nextKey(),
               row_index: r.row_index,
@@ -371,67 +397,59 @@ export default function BulkStockAdjustForm() {
               item_name: res.item.name,
               unit_code: unit.code,
               unit_standard: unitStd,
-              new_cost: newCost,
               stand_value: unit.stand_value,
               divide_value: unit.divide_value,
-              wh_code: loc.wh_code,
-              wh_name: loc.wh_name,
-              shelf_code: loc.shelf_code,
-              shelf_name: loc.shelf_name,
-              stock_qty: loc.stock_qty,
-              old_cost: loc.old_cost,
+              wh_code: a.loc.wh_code,
+              wh_name: a.loc.wh_name,
+              shelf_code: a.loc.shelf_code,
+              shelf_name: a.loc.shelf_name,
+              available_qty: roundQty(a.loc.stock_qty / ratio),
+              reduce_qty: roundQty(a.qty_std / ratio),
+              unit_cost: a.loc.old_cost * ratio,
               checked: true,
             });
           }
         }),
       );
       setLoadProgress({
-        done: Math.min(i + BATCH, rows.length),
-        total: rows.length,
+        done: Math.min(i + BATCH, importRows.length),
+        total: importRows.length,
         startedAt,
       });
     }
 
-    // sort preview: wh → shelf → item
     preview.sort(
       (a, b) =>
         a.wh_code.localeCompare(b.wh_code) ||
         a.shelf_code.localeCompare(b.shelf_code) ||
         a.item_code.localeCompare(b.item_code),
     );
-
-    // sort error/info rows by row_index
     results.sort((a, b) => a.row_index - b.row_index);
 
     setRows(preview);
     setItemResults(results);
     setLoadProgress(null);
 
-    const groupCount = new Set(preview.map((r) => `${r.wh_code}|${r.shelf_code}`))
-      .size;
+    const groupCount = new Set(
+      preview.map((r) => `${r.wh_code}|${r.shelf_code}`),
+    ).size;
     const errorCount = results.filter((r) => r.status === 'error').length;
-    const noLocCount = results.filter((r) => r.status === 'no-locations').length;
     const okCount = results.filter((r) => r.status === 'ok').length;
 
     const parts: string[] = [];
-    parts.push(`อ่าน ${rows.length} item`);
+    parts.push(`อ่าน ${importRows.length} item`);
     parts.push(`✓ ${okCount}`);
-    if (noLocCount > 0) parts.push(`⊘ ${noLocCount} ไม่มีที่เก็บ`);
     if (errorCount > 0) parts.push(`✗ ${errorCount} error`);
     parts.push(`preview ${preview.length} แถว ใน ${groupCount} ใบ`);
 
-    let kind: 'info' | 'warn' = 'info';
     const extras: string[] = [];
     if (duplicates.size > 0) {
       extras.push(`item ซ้ำ ${duplicates.size} รหัส (ใช้แถวสุดท้าย)`);
-      kind = 'warn';
     }
-    if (parseWarning) {
-      extras.push(parseWarning);
-      kind = 'warn';
-    }
+    if (parseWarning) extras.push(parseWarning);
+
     setImportMsg({
-      kind: errorCount > 0 || kind === 'warn' ? 'warn' : 'info',
+      kind: errorCount > 0 || extras.length > 0 ? 'warn' : 'info',
       text: parts.join(' — ') + (extras.length ? ` | ${extras.join(' | ')}` : ''),
     });
   }
@@ -456,6 +474,14 @@ export default function BulkStockAdjustForm() {
     );
   }
 
+  function setRowQty(key: number, qty: number) {
+    setRows((prev) =>
+      prev.map((r) =>
+        r.key === key ? { ...r, reduce_qty: Number.isFinite(qty) ? qty : 0 } : r,
+      ),
+    );
+  }
+
   // ── Manual picker handlers ──
   function openItemPicker() {
     setPickerKey((k) => k + 1);
@@ -465,7 +491,7 @@ export default function BulkStockAdjustForm() {
   function onPickItem(item: ItemOption) {
     setPickerData(null);
     setPickerUnitCode(item.unit_standard);
-    setPickerNewCost(0);
+    setPickerQty(0);
     setImportMsg(null);
     startPickerLoading(async () => {
       const res = await getItemLocations(item.code);
@@ -476,14 +502,17 @@ export default function BulkStockAdjustForm() {
         });
         return;
       }
-      const units = res.units && res.units.length > 0
-        ? res.units
-        : [{
-            code: res.item.unit_standard,
-            stand_value: 1,
-            divide_value: 1,
-            ratio: 1,
-          }];
+      const units =
+        res.units && res.units.length > 0
+          ? res.units
+          : [
+              {
+                code: res.item.unit_standard,
+                stand_value: 1,
+                divide_value: 1,
+                ratio: 1,
+              },
+            ];
       setPickerData({ item: res.item, units, locations: res.locations });
       setPickerUnitCode(res.item.unit_standard || units[0].code);
     });
@@ -496,40 +525,40 @@ export default function BulkStockAdjustForm() {
       setImportMsg({ kind: 'error', text: 'หน่วยไม่ถูกต้อง' });
       return;
     }
-    if (!Number.isFinite(pickerNewCost) || pickerNewCost < 0) {
-      setImportMsg({ kind: 'error', text: 'กรุณากรอกทุนเป้า (≥ 0)' });
+    if (!Number.isFinite(pickerQty) || pickerQty <= 0) {
+      setImportMsg({ kind: 'error', text: 'กรุณากรอกจำนวนที่ลด (> 0)' });
       return;
     }
 
-    startAdding(async () => {
-      const positive = pickerData.locations.filter((l) => l.stock_qty > 0);
-      const skipped = pickerData.locations.length - positive.length;
-
-      if (positive.length === 0) {
+    startAdding(() => {
+      const ratio = unitRatio(unit);
+      const allocations = allocateReduce(pickerQty * ratio, pickerData.locations);
+      if (!allocations) {
+        const totalStd = totalAvailable(pickerData.locations);
         setImportMsg({
-          kind: 'warn',
-          text: `${pickerData.item.code} — ไม่มีที่เก็บที่คงเหลือ > 0 (${pickerData.locations.length} skipped)`,
+          kind: 'error',
+          text: `${pickerData.item.code} — คงเหลือรวมไม่พอ มี ${formatMoney(totalStd / ratio)} ${unit.code} แต่ขอตัด ${formatMoney(pickerQty)} ${unit.code}`,
         });
         return;
       }
 
       const unitStd = pickerData.item.unit_standard || unit.code;
-      const newRows: PreviewRow[] = positive.map((loc) => ({
+      const newRows: PreviewRow[] = allocations.map((a) => ({
         key: nextKey(),
-        row_index: -1, // manual = no Excel row
+        row_index: -1,
         item_code: pickerData.item.code,
         item_name: pickerData.item.name,
         unit_code: unit.code,
         unit_standard: unitStd,
-        new_cost: pickerNewCost,
         stand_value: unit.stand_value,
         divide_value: unit.divide_value,
-        wh_code: loc.wh_code,
-        wh_name: loc.wh_name,
-        shelf_code: loc.shelf_code,
-        shelf_name: loc.shelf_name,
-        stock_qty: loc.stock_qty,
-        old_cost: loc.old_cost,
+        wh_code: a.loc.wh_code,
+        wh_name: a.loc.wh_name,
+        shelf_code: a.loc.shelf_code,
+        shelf_name: a.loc.shelf_name,
+        available_qty: roundQty(a.loc.stock_qty / ratio),
+        reduce_qty: roundQty(a.qty_std / ratio),
+        unit_cost: a.loc.old_cost * ratio,
         checked: true,
       }));
 
@@ -537,41 +566,35 @@ export default function BulkStockAdjustForm() {
       const code = pickerData.item.code;
       const replaced = rows.some((r) => r.item_code === code);
       const others = rows.filter((r) => r.item_code !== code);
-      const merged = [...others, ...newRows].sort(
-        (a, b) =>
-          a.wh_code.localeCompare(b.wh_code) ||
-          a.shelf_code.localeCompare(b.shelf_code) ||
-          a.item_code.localeCompare(b.item_code),
+      setRows(
+        [...others, ...newRows].sort(
+          (a, b) =>
+            a.wh_code.localeCompare(b.wh_code) ||
+            a.shelf_code.localeCompare(b.shelf_code) ||
+            a.item_code.localeCompare(b.item_code),
+        ),
       );
-      setRows(merged);
 
-      // อัพเดต itemResults (เพิ่ม/แทน entry ของ item นี้)
-      setItemResults((prev) => {
-        const filtered = prev.filter((r) => r.item_code !== code);
-        return [
-          ...filtered,
-          {
-            row_index: 0,
-            item_code: code,
-            status: 'ok',
-            item_name: pickerData.item.name,
-            skipped_zero: skipped,
-            location_count: positive.length,
-          },
-        ];
-      });
+      setItemResults((prev) => [
+        ...prev.filter((r) => r.item_code !== code),
+        {
+          row_index: 0,
+          item_code: code,
+          status: 'ok',
+          item_name: pickerData.item.name,
+          location_count: newRows.length,
+        },
+      ]);
 
-      const msg = replaced
-        ? `${code} — แทนแถวเก่า (${newRows.length} แถวใหม่)`
-        : `+ ${code} (${newRows.length} แถว)`;
       setImportMsg({
         kind: 'info',
-        text: skipped > 0 ? `${msg} · ข้าม ${skipped} ที่เก็บ คงเหลือ ≤ 0` : msg,
+        text: replaced
+          ? `${code} — แทนแถวเก่า (ตัดจาก ${newRows.length} ที่เก็บ)`
+          : `+ ${code} (ตัดจาก ${newRows.length} ที่เก็บ)`,
       });
 
-      // reset picker
       setPickerData(null);
-      setPickerNewCost(0);
+      setPickerQty(0);
     });
   }
 
@@ -580,36 +603,38 @@ export default function BulkStockAdjustForm() {
       setImportMsg({ kind: 'error', text: 'กรุณาเลือกอย่างน้อย 1 แถว' });
       return;
     }
+    if (overCount > 0) {
+      setImportMsg({
+        kind: 'error',
+        text: `มี ${overCount} แถวที่จำนวนเกินคงเหลือ — แก้ก่อนบันทึก`,
+      });
+      return;
+    }
 
     setOutcomes([]);
     const saveStartedAt = Date.now();
-    setSaveProgress({
-      done: 0,
-      total: docGroups.length,
-      startedAt: saveStartedAt,
-    });
+    setSaveProgress({ done: 0, total: docGroups.length, startedAt: saveStartedAt });
     setImportMsg(null);
 
     startSaving(async () => {
       const results: SaveOutcome[] = [];
       for (let i = 0; i < docGroups.length; i++) {
         const g = docGroups[i];
-        const lines = g.rows.map((r) => {
-          const sum = rowSumAmount(r);
-          return {
-            item_code: r.item_code,
-            item_name: r.item_name,
-            unit_code: r.unit_code,
-            sum_amount: sum,
-            wh_code: r.wh_code,
-            shelf_code: r.shelf_code,
-            stand_value: r.stand_value,
-            divide_value: r.divide_value,
-          };
-        });
+        const lines = g.rows.map((r) => ({
+          item_code: r.item_code,
+          item_name: r.item_name,
+          unit_code: r.unit_code,
+          qty: r.reduce_qty,
+          price: r.unit_cost,
+          sum_amount: rowSumAmount(r),
+          wh_code: r.wh_code,
+          shelf_code: r.shelf_code,
+          stand_value: r.stand_value,
+          divide_value: r.divide_value,
+        }));
         const groupTotal = lines.reduce((s, l) => s + l.sum_amount, 0);
 
-        const res = await saveStockAdjust({
+        const res = await saveStockAdjustReduce({
           doc_date: docDate,
           doc_time: docTime,
           doc_ref: docRef,
@@ -651,9 +676,21 @@ export default function BulkStockAdjustForm() {
       {/* ── Header ── */}
       <div className="rounded-xl bg-white p-4 shadow-sm">
         <h2 className="mb-3 flex items-center gap-2 text-base font-semibold text-gray-800">
-          <Layers className="h-5 w-5 text-purple-600" />
-          ปรับต้นทุนทุกที่เก็บ (Bulk IA by Location) — Import
+          <TrendingDown className="h-5 w-5 text-purple-600" />
+          ปรับปรุงสต็อกสินค้า (ลด) — ตัดสต็อกออก — เอกสาร IS
         </h2>
+
+        <div className="mb-3 flex items-start gap-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-800">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <span>
+            เมนูนี้ <b>ตัดจำนวนสินค้าออกจากสต็อกจริง</b> — ระบุจำนวนรวมที่ต้องการลด
+            ระบบจะไล่ตัดจากที่เก็บที่<b>มีของมากที่สุดก่อน</b>จนครบ
+            โดยใช้ทุนเฉลี่ยปัจจุบันของแต่ละที่เก็บ (ทุนเฉลี่ยหลังตัดไม่เปลี่ยน)
+            <br />
+            ถ้าต้องการแค่ปรับทุนโดยไม่แตะจำนวน ให้ใช้เมนู
+            &ldquo;ปรับต้นทุนทุกที่เก็บ&rdquo;
+          </span>
+        </div>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <Field label="วันที่เอกสาร *">
@@ -714,7 +751,7 @@ export default function BulkStockAdjustForm() {
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
-            onClick={downloadTemplate}
+            onClick={downloadReduceTemplate}
             className="flex items-center gap-2 rounded-lg border border-purple-300 bg-white px-3 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50"
           >
             <Download className="h-4 w-4" />
@@ -745,7 +782,7 @@ export default function BulkStockAdjustForm() {
           )}
 
           <div className="ml-auto text-xs text-gray-500">
-            Template format: <code>รหัสสินค้า | หน่วยนับ | ทุนเฉลี่ยที่ต้องการ</code>
+            Template format: <code>รหัสสินค้า | หน่วยนับ | จำนวนที่ลด</code>
           </div>
         </div>
 
@@ -821,13 +858,13 @@ export default function BulkStockAdjustForm() {
             </select>
           </Field>
 
-          <Field label="ทุนเป้า" className="md:col-span-2">
+          <Field label="จำนวนที่ลด" className="md:col-span-2">
             <input
               type="number"
               step="0.00001"
               min="0"
-              value={pickerNewCost}
-              onChange={(e) => setPickerNewCost(Number(e.target.value) || 0)}
+              value={pickerQty}
+              onChange={(e) => setPickerQty(Number(e.target.value) || 0)}
               disabled={!pickerData}
               className={`${inputClass} text-right`}
             />
@@ -837,7 +874,7 @@ export default function BulkStockAdjustForm() {
             <button
               type="button"
               onClick={addManualItem}
-              disabled={!pickerData || isAdding || pickerNewCost <= 0}
+              disabled={!pickerData || isAdding || pickerQty <= 0}
               className={`flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-gray-300 ${
                 pickerExistingCount > 0
                   ? 'bg-amber-600 hover:bg-amber-700'
@@ -847,7 +884,7 @@ export default function BulkStockAdjustForm() {
                 !pickerData
                   ? 'เลือกสินค้าก่อน'
                   : pickerExistingCount > 0
-                    ? `แทน ${pickerExistingCount} แถวเดิมของ ${pickerData.item.code} ด้วยค่าใหม่`
+                    ? `แทน ${pickerExistingCount} แถวเดิมของ ${pickerData.item.code}`
                     : 'เพิ่มเข้า preview'
               }
             >
@@ -861,34 +898,35 @@ export default function BulkStockAdjustForm() {
           </div>
 
           {pickerData && pickerExistingCount > 0 && (
-            <div className="md:col-span-12 flex items-start gap-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-800">
+            <div className="flex items-start gap-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-800 md:col-span-12">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
               <span>
                 <b>{pickerData.item.code}</b> มีอยู่ใน preview แล้ว{' '}
                 <b>{pickerExistingCount}</b> แถว — กดเพิ่มจะ
-                <b>แทนทุกแถวเดิม</b>ด้วยค่าใหม่ (ทุน/หน่วยที่กรอกตอนนี้)
+                <b>แทนทุกแถวเดิม</b>ด้วยค่าใหม่
               </span>
             </div>
           )}
 
-          {pickerData && pickerData.locations.length > 0 && (
-            <div className="md:col-span-12 text-xs text-gray-500">
-              พบ {pickerData.locations.length} ที่เก็บ
+          {pickerData && (
+            <div className="text-xs text-gray-500 md:col-span-12">
               {(() => {
+                const unit = pickerData.units.find(
+                  (u) => u.code === pickerUnitCode,
+                );
+                const ratio = unit ? unitRatio(unit) : 1;
                 const positive = pickerData.locations.filter(
                   (l) => l.stock_qty > 0,
                 );
-                const skipped = pickerData.locations.length - positive.length;
-                return skipped > 0
-                  ? ` — จะใส่ ${positive.length} แถว (ข้าม ${skipped} ที่ คงเหลือ ≤ 0)`
-                  : ` — จะใส่ ${positive.length} แถว`;
+                const totalStd = totalAvailable(pickerData.locations);
+                return `พบ ${positive.length} ที่เก็บที่มีของ — คงเหลือรวม ${formatMoney(totalStd / ratio)} ${pickerUnitCode || ''}`;
               })()}
             </div>
           )}
         </div>
       </div>
 
-      {/* ── Item-level errors / no-location ── */}
+      {/* ── Item-level errors ── */}
       {itemResults.some((r) => r.status !== 'ok') && (
         <div className="rounded-xl bg-white p-4 shadow-sm">
           <h3 className="mb-3 text-sm font-semibold text-gray-700">
@@ -902,25 +940,15 @@ export default function BulkStockAdjustForm() {
                   key={`${r.row_index}-${r.item_code}`}
                   className="flex items-start gap-2"
                 >
-                  {r.status === 'error' ? (
-                    <XCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-600" />
-                  ) : (
-                    <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
-                  )}
+                  <XCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-600" />
                   <span className="text-gray-400">row {r.row_index}</span>
-                  <span className="font-mono text-xs">{r.item_code || '(ว่าง)'}</span>
+                  <span className="font-mono text-xs">
+                    {r.item_code || '(ว่าง)'}
+                  </span>
                   {r.item_name && (
                     <span className="text-gray-700">{r.item_name}</span>
                   )}
-                  <span
-                    className={
-                      r.status === 'error' ? 'text-red-700' : 'text-amber-800'
-                    }
-                  >
-                    {r.status === 'error'
-                      ? r.error
-                      : `ไม่มีที่เก็บที่คงเหลือ > 0 (${r.skipped_zero ?? 0} skipped)`}
-                  </span>
+                  <span className="text-red-700">{r.error}</span>
                 </div>
               ))}
           </div>
@@ -953,6 +981,16 @@ export default function BulkStockAdjustForm() {
             </div>
           </div>
 
+          {overCount > 0 && (
+            <div className="mb-3 flex items-start gap-2 rounded-lg bg-red-50 p-2 text-sm text-red-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <span>
+                มี <b>{overCount}</b> แถวที่จำนวนที่ลดเกินคงเหลือ — บันทึกไม่ได้
+                จนกว่าจะแก้
+              </span>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-600">
@@ -963,9 +1001,9 @@ export default function BulkStockAdjustForm() {
                   <th className="px-2 py-2 text-left">สินค้า</th>
                   <th className="px-2 py-2 text-left">หน่วย</th>
                   <th className="px-2 py-2 text-right">คงเหลือ</th>
-                  <th className="px-2 py-2 text-right">ทุนเดิม</th>
-                  <th className="px-2 py-2 text-right">ทุนเป้า</th>
-                  <th className="px-2 py-2 text-right">มูลค่าปรับ</th>
+                  <th className="px-2 py-2 text-right">จำนวนที่ลด</th>
+                  <th className="px-2 py-2 text-right">ทุน/หน่วย</th>
+                  <th className="px-2 py-2 text-right">มูลค่าที่ลด</th>
                 </tr>
               </thead>
               <tbody>
@@ -982,6 +1020,7 @@ export default function BulkStockAdjustForm() {
                       groupSum={groupSum}
                       amountDecimal={amountDecimal}
                       onToggleRow={toggleRow}
+                      onChangeQty={setRowQty}
                       onToggleGroup={(check) =>
                         toggleGroup(g.wh_code, g.shelf_code, check)
                       }
@@ -995,7 +1034,7 @@ export default function BulkStockAdjustForm() {
                     colSpan={8}
                     className="px-2 py-2 text-right font-semibold text-gray-700"
                   >
-                    รวมมูลค่า ({docGroups.length} ใบ)
+                    รวมมูลค่าที่ลด ({docGroups.length} ใบ)
                   </td>
                   <td className="px-2 py-2 text-right text-lg font-bold text-purple-700 tabular-nums">
                     {formatAmount(totalAmount, amountDecimal)}
@@ -1037,7 +1076,7 @@ export default function BulkStockAdjustForm() {
             </div>
             <button
               type="button"
-              disabled={isSaving || docGroups.length === 0}
+              disabled={isSaving || docGroups.length === 0 || overCount > 0}
               onClick={onSave}
               className="flex items-center gap-2 rounded-lg bg-green-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-gray-300"
             >
@@ -1115,6 +1154,7 @@ interface GroupBlockProps {
   groupSum: number;
   amountDecimal: number;
   onToggleRow: (key: number) => void;
+  onChangeQty: (key: number, qty: number) => void;
   onToggleGroup: (check: boolean) => void;
 }
 
@@ -1124,6 +1164,7 @@ function GroupBlock({
   groupSum,
   amountDecimal,
   onToggleRow,
+  onChangeQty,
   onToggleGroup,
 }: GroupBlockProps) {
   const allChecked = group.rows.every((r) => r.checked);
@@ -1157,8 +1198,7 @@ function GroupBlock({
         </td>
       </tr>
       {group.rows.map((r) => {
-        const qty = rowQty(r);
-        const sum = rowSumAmount(r);
+        const over = r.reduce_qty > r.available_qty;
         return (
           <tr key={r.key} className="border-t">
             <td className="px-2 py-1 text-center">
@@ -1177,23 +1217,28 @@ function GroupBlock({
             </td>
             <td className="px-2 py-1 text-xs">{r.unit_code}</td>
             <td className="px-2 py-1 text-right text-xs tabular-nums">
-              <div>
-                {formatMoney(r.stock_qty)} {r.unit_standard}
-              </div>
-              {r.unit_code !== r.unit_standard && (
-                <div className="text-[10px] text-gray-400">
-                  = {formatMoney(qty)} {r.unit_code}
-                </div>
-              )}
+              {formatMoney(r.available_qty)} {r.unit_code}
+            </td>
+            <td className="px-2 py-1 text-right">
+              <input
+                type="number"
+                step="0.00001"
+                min="0"
+                max={r.available_qty}
+                value={r.reduce_qty}
+                onChange={(e) => onChangeQty(r.key, Number(e.target.value))}
+                className={`w-24 rounded border px-2 py-1 text-right text-xs tabular-nums focus:outline-none focus:ring-1 ${
+                  over
+                    ? 'border-red-400 bg-red-50 text-red-700 focus:ring-red-400'
+                    : 'border-gray-300 focus:border-purple-500 focus:ring-purple-500'
+                }`}
+              />
             </td>
             <td className="px-2 py-1 text-right text-xs tabular-nums">
-              {formatMoney(r.old_cost)}
-            </td>
-            <td className="px-2 py-1 text-right text-xs tabular-nums">
-              {formatMoney(r.new_cost)}
+              {formatMoney(r.unit_cost)}
             </td>
             <td className="px-2 py-1 text-right font-medium tabular-nums">
-              {formatAmount(sum, amountDecimal)}
+              {formatAmount(rowSumAmount(r), amountDecimal)}
             </td>
           </tr>
         );

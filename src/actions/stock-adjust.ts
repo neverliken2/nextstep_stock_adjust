@@ -83,6 +83,23 @@ export interface StockAdjustLinePayload {
   divide_value: number;
 }
 
+/** 1 บรรทัดของเอกสาร IS (ตัดสต็อกออก) — ต่างจาก IA ตรงที่มี qty + price จริง */
+export interface StockReduceLinePayload {
+  item_code: string;
+  item_name: string;
+  unit_code: string;
+  /** จำนวนที่ตัดออก (บวกเสมอ) */
+  qty: number;
+  /** ทุนเฉลี่ยปัจจุบันของ (item, wh, shelf) นั้น */
+  price: number;
+  /** qty × price (บวกเสมอ) */
+  sum_amount: number;
+  wh_code: string;
+  shelf_code: string;
+  stand_value: number;
+  divide_value: number;
+}
+
 export interface StockAdjustPayload {
   doc_date: string;
   doc_time: string;
@@ -92,6 +109,12 @@ export interface StockAdjustPayload {
   location_from: string;
   remark: string;
   lines: StockAdjustLinePayload[];
+}
+
+/** Payload ของเอกสาร IS — header เหมือน IA ต่างแค่ shape ของ lines */
+export interface StockReducePayload
+  extends Omit<StockAdjustPayload, 'lines'> {
+  lines: StockReduceLinePayload[];
 }
 
 export interface SaveResult {
@@ -196,13 +219,16 @@ function mapApiError(err: unknown, fallback = 'เกิดข้อผิดพ
       case 'DATABASE_NOT_FOUND':
         return 'กรุณาเลือกฐานข้อมูลก่อน';
       case 'DOC_FORMAT_NOT_FOUND':
-        return 'ไม่พบ doc_format "IA" ในระบบ — กรุณาเพิ่ม code IA ใน erp_doc_format';
+        // message จาก smlnesservice ระบุ code ที่หาไม่เจอมาแล้ว (IA / IS / RMB)
+        return err.message || 'ไม่พบ doc_format ในระบบ — กรุณาเพิ่ม code ใน erp_doc_format';
       case 'DUPLICATE_DOC_NO':
         return 'เลขที่เอกสารซ้ำ — กรุณาลองใหม่';
       case 'EMPTY_LINES':
         return 'ไม่มีรายการสินค้า';
       case 'ZERO_AMOUNT':
         return 'มูลค่ารวมเท่ากับ 0';
+      case 'NO_PERMISSION':
+        return err.message || 'ไม่มีสิทธิ์ใช้งานเมนูนี้';
       case 'ITEM_NOT_FOUND':
         return 'ไม่พบรหัสสินค้า';
       case 'UNIT_NOT_FOUND':
@@ -450,6 +476,44 @@ export async function saveStockAdjust(
   try {
     const data = await apiPost<SmlnesSaveResult>(
       '/api/v1/stock-adjust',
+      bearer,
+      payload,
+    );
+    return {
+      success: true,
+      message: 'บันทึกเอกสารสำเร็จ',
+      doc_no: data.doc_no,
+    };
+  } catch (err) {
+    return { success: false, message: mapApiError(err) };
+  }
+}
+
+// ==================== 9. Save Stock Reduce (ตัดสต็อก — IS, trans_flag=68) ====================
+
+/**
+ * บันทึกเอกสาร IS — ตัดสต็อกออก (smlnesservice ≥ 0.8.0)
+ *
+ * backend INSERT ด้วย trans_flag=68 / doc_format 'IS' / **calc_flag=−1**
+ * ทำให้ทั้งจำนวนคงเหลือและมูลค่าลดลง
+ *
+ * ⚠️ `qty` / `price` / `sum_amount` ต้องเป็นค่าบวกทั้งหมด
+ *    (calc_flag=−1 จะพาไปหักออกเอง — ถ้าส่งค่าลบจะกลายเป็นเพิ่มสต็อกแทน)
+ *    backend reject ด้วย VALIDATION_ERROR ถ้าเจอค่า ≤ 0
+ *
+ * ต้องมีสิทธิ์ menu_ic_stk_adjust_subtract — ไม่งั้นได้ NO_PERMISSION
+ */
+export async function saveStockAdjustReduce(
+  payload: StockReducePayload,
+): Promise<SaveResult> {
+  const bearer = await getSessionToken();
+  if (!bearer) {
+    return { success: false, message: 'Session หมดอายุ — กรุณา login ใหม่' };
+  }
+
+  try {
+    const data = await apiPost<SmlnesSaveResult>(
+      '/api/v1/stock-adjust/reduce',
       bearer,
       payload,
     );

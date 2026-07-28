@@ -7,18 +7,21 @@ import Image from 'next/image';
 import { Database, Check, LogOut } from 'lucide-react';
 
 export default function SelectDatabasePage() {
-  const { user, availableDatabases, selectDatabase, logout } = useAuth();
+  const { user, isLoading, availableDatabases, selectDatabase, logout } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
+    if (isLoading) return;
     if (!user) {
       router.push('/login');
     } else if (user.selected_database) {
       router.push('/');
     }
-  }, [user, router]);
+  }, [user, isLoading, router]);
 
-  if (!user || user.selected_database) {
+  // isLoading = ยัง hydrate ไม่เสร็จ → ฝั่ง server ยังไม่รู้จัก user (localStorage)
+  // ต้อง render เหมือนกันทั้งสองฝั่ง ไม่งั้น hydration mismatch
+  if (isLoading || !user || user.selected_database) {
     return null;
   }
 

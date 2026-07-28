@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useSyncExternalStore, ReactNode } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { destroySession } from '@/actions/session';
 import { loginUser, selectDatabase as selectDatabaseAction } from '@/actions/auth';
@@ -24,6 +24,8 @@ export interface User {
   selected_database_name?: string;
   /** สิทธิ์เมนู "สินค้า/วัตถุดิบ คงเหลือยกมา" (menu_ic_stk_balance) — จาก login response */
   can_stock_balance?: boolean;
+  /** สิทธิ์เมนู "ปรับปรุงสต็อกทุกที่เก็บ (ลด)" (menu_ic_stk_adjust_subtract) — จาก login response */
+  can_stock_adjust_reduce?: boolean;
 }
 
 interface AuthContextType {
@@ -67,10 +69,30 @@ function loadStoredDatabases(): UserDatabase[] {
   }
 }
 
+/**
+ * subscribe ที่ไม่มีวันเปลี่ยน — ใช้กับ useSyncExternalStore เพื่อถาม "hydrate เสร็จหรือยัง"
+ * (ประกาศนอก component กัน re-subscribe ทุก render)
+ */
+const neverChanges = () => () => {};
+
 export function AuthProvider({ children }: { children: ReactNode }) {
+  /**
+   * `loadStoredUser()` อ่าน localStorage → ฝั่ง server คืน null เสมอ แต่ฝั่ง client คืนค่าจริง
+   * ถ้าปล่อยให้ render แรกของ client ใช้ค่าจริงเลย tree จะไม่ตรงกับ HTML ที่ SSR ส่งมา
+   * → hydration mismatch (ClientLayout ฝั่ง server return null, ฝั่ง client return <div>)
+   *
+   * useSyncExternalStore คืน getServerSnapshot (false) ทั้งตอน SSR **และตอน hydrate**
+   * แล้วค่อยสลับเป็น true หลัง hydrate เสร็จ → render แรกสองฝั่งตรงกัน
+   * ระหว่างนั้น isLoading = true ทำให้ ClientLayout โชว์ LoadingScreen ซึ่ง markup เหมือนกันทั้งคู่
+   */
+  const isHydrated = useSyncExternalStore(
+    neverChanges,
+    () => true,
+    () => false,
+  );
   const [user, setUser] = useState<User | null>(() => loadStoredUser());
   const [availableDatabases, setAvailableDatabases] = useState<UserDatabase[]>(() => loadStoredDatabases());
-  const [isLoading] = useState(false);
+  const isLoading = !isHydrated;
   const [lastActivity, setLastActivity] = useState(() => Date.now());
   const router = useRouter();
   const pathname = usePathname();
@@ -143,6 +165,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           provider,
           data_group: dataGroup,
           can_stock_balance: result.canStockBalance ?? false,
+          can_stock_adjust_reduce: result.canStockAdjustReduce ?? false,
         };
         
         // Session cookie ถูกสร้างใน loginUser แล้ว

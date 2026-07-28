@@ -37,6 +37,8 @@ export interface LoginResult {
   needSelectDatabase?: boolean;
   /** สิทธิ์เมนู "สินค้า/วัตถุดิบ คงเหลือยกมา" (menu_ic_stk_balance) */
   canStockBalance?: boolean;
+  /** สิทธิ์เมนู "ปรับปรุงสต็อกทุกที่เก็บ (ลด)" (menu_ic_stk_adjust_subtract) */
+  canStockAdjustReduce?: boolean;
 }
 
 export interface SelectDatabaseResult {
@@ -63,8 +65,12 @@ interface LoginResponse {
   preSelectExpiresIn: number;
   user: SmlnesUserInfo;
   databases: SmlnesDatabaseInfo[];
-  /** smlnesservice ≥ 0.6.0 — สิทธิ์เมนูย่อยของ client stock-adjust */
-  permissions?: { canStockBalance: boolean };
+  /** smlnesservice ≥ 0.6.0 — สิทธิ์เมนูย่อยของ client stock-adjust
+   *  canStockAdjustReduce เพิ่มใน ≥ 0.7.0 (service เก่าไม่ส่ง → default false) */
+  permissions?: {
+    canStockBalance: boolean;
+    canStockAdjustReduce?: boolean;
+  };
 }
 
 interface SelectDatabaseResponse {
@@ -152,6 +158,7 @@ export async function loginUser(
     databases,
     needSelectDatabase: databases.length > 0,
     canStockBalance: response.permissions?.canStockBalance ?? false,
+    canStockAdjustReduce: response.permissions?.canStockAdjustReduce ?? false,
   };
 }
 

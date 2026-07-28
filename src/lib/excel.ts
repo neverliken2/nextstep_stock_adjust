@@ -20,6 +20,19 @@ export interface ImportRow {
   new_cost: number;
 }
 
+/**
+ * แถว import ของเมนู "ปรับปรุงสต็อกสินค้า (ลด)" — ตัดสต็อกออก (IS)
+ * ไม่มีคลัง/ที่เก็บ — ระบุจำนวนรวม แล้วให้หน้าจอไล่ตัดจากที่เก็บที่มีของมากสุดก่อน
+ * ทุน/หน่วยดึงจากทุนเฉลี่ยปัจจุบันของแต่ละที่เก็บอัตโนมัติ (ไม่ต้องกรอก)
+ */
+export interface ReduceImportRow {
+  row_index: number;
+  item_code: string;
+  unit_code: string;
+  /** จำนวนรวมที่ต้องการตัดออก (ในหน่วยที่ระบุ) */
+  reduce_qty: number;
+}
+
 /** แถว import ของเมนู "สินค้า/วัตถุดิบ คงเหลือยกมา" (RMB) */
 export interface BalanceImportRow {
   row_index: number;
@@ -35,6 +48,8 @@ export const MAX_IMPORT_ROWS = 1000;
 export const MAX_FILE_SIZE_MB = 5;
 
 const HEADERS = ['รหัสสินค้า', 'รหัสหน่วยนับ', 'ทุนเฉลี่ยที่ต้องการ'];
+
+const REDUCE_HEADERS = ['รหัสสินค้า', 'รหัสหน่วยนับ', 'จำนวนที่ลด'];
 
 const BALANCE_HEADERS = [
   'รหัสสินค้า',
@@ -94,6 +109,52 @@ export async function parseTextFile(file: File): Promise<{
   warning?: string;
 }> {
   return rowsFromGrid(await gridFromText(file));
+}
+
+// ──────────────────────────── Reduce (IS) import ────────────────────────────
+
+/** เลือก parser จากนามสกุลไฟล์ — สำหรับเมนูตัดสต็อก (3 คอลัมน์) */
+export async function parseReduceImportFile(file: File): Promise<{
+  rows: ReduceImportRow[];
+  warning?: string;
+}> {
+  const name = file.name.toLowerCase();
+  const grid = name.endsWith('.xlsx')
+    ? await gridFromExcel(file)
+    : TEXT_EXTENSIONS.some((ext) => name.endsWith(ext))
+      ? await gridFromText(file)
+      : null;
+  if (!grid) {
+    throw new Error(`รองรับเฉพาะไฟล์ .xlsx / ${TEXT_EXTENSIONS.join(' / ')}`);
+  }
+
+  const { rows, warning } = threeColRowsFromGrid(grid, REDUCE_HEADERS);
+  return {
+    rows: rows.map((r) => ({
+      row_index: r.row_index,
+      item_code: r.item_code,
+      unit_code: r.unit_code,
+      reduce_qty: r.value,
+    })),
+    warning,
+  };
+}
+
+/** Generate template ตัดสต็อก + trigger browser download */
+export function downloadReduceTemplate(): void {
+  const data: (string | number)[][] = [
+    REDUCE_HEADERS,
+    ['01-0086', 'ชิ้น', 10],
+    ['01-0009', 'ลัง24', 2],
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws['!cols'] = [{ wch: 18 }, { wch: 14 }, { wch: 12 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Stock_Reduce');
+
+  XLSX.writeFile(wb, 'stock_reduce_template.xlsx');
 }
 
 // ──────────────────────────── Balance (RMB) import ────────────────────────────
@@ -193,56 +254,79 @@ function rowsFromGrid(raw: unknown[][]): {
   rows: ImportRow[];
   warning?: string;
 } {
+  const { rows, warning } = threeColRowsFromGrid(raw, HEADERS);
+  return {
+    rows: rows.map((r) => ({
+      row_index: r.row_index,
+      item_code: r.item_code,
+      unit_code: r.unit_code,
+      new_cost: r.value,
+    })),
+    warning,
+  };
+}
+
+/**
+ * Grid → แถว 3 คอลัมน์ (รหัสสินค้า | หน่วยนับ | ตัวเลข)
+ * ใช้ร่วมระหว่างเมนูปรับต้นทุน (ค่าที่ 3 = ทุนเป้า) และเมนูตัดสต็อก (ค่าที่ 3 = จำนวนที่ลด)
+ */
+function threeColRowsFromGrid(
+  raw: unknown[][],
+  headers: string[],
+): {
+  rows: { row_index: number; item_code: string; unit_code: string; value: number }[];
+  warning?: string;
+} {
   if (raw.length === 0) throw new Error('ไฟล์ว่าง');
 
   const trim = (v: unknown): string => String(v ?? '').trim();
 
-  // หา header row (row แรกที่ match HEADERS) — รองรับ header ที่มี whitespace
+  // หา header row (row แรกที่ match headers) — รองรับ header ที่มี whitespace
   let headerIdx = -1;
   for (let i = 0; i < Math.min(raw.length, 5); i++) {
     const cells = (raw[i] || []).map(trim);
-    if (
-      cells.length >= 3 &&
-      cells[0] === HEADERS[0] &&
-      cells[1] === HEADERS[1] &&
-      cells[2] === HEADERS[2]
-    ) {
+    if (cells.length >= 3 && headers.every((h, c) => cells[c] === h)) {
       headerIdx = i;
       break;
     }
   }
   if (headerIdx < 0) {
-    throw new Error(`Header ไม่ตรง — แถวแรกต้องเป็น: ${HEADERS.join(' | ')}`);
+    throw new Error(`Header ไม่ตรง — แถวแรกต้องเป็น: ${headers.join(' | ')}`);
   }
 
-  const rows: ImportRow[] = [];
+  const rows: {
+    row_index: number;
+    item_code: string;
+    unit_code: string;
+    value: number;
+  }[] = [];
   let dataIdx = 0;
   for (let i = headerIdx + 1; i < raw.length; i++) {
     const r = raw[i] || [];
     const itemCode = trim(r[0]);
     const unitCode = trim(r[1]);
-    const newCostRaw = r[2];
+    const valueRaw = r[2];
 
     // skip empty row
     if (
       !itemCode &&
       !unitCode &&
-      (newCostRaw === '' || newCostRaw === null || newCostRaw === undefined)
+      (valueRaw === '' || valueRaw === null || valueRaw === undefined)
     ) {
       continue;
     }
 
     dataIdx++;
-    const newCost =
-      typeof newCostRaw === 'number'
-        ? newCostRaw
-        : parseFloat(String(newCostRaw).trim().replace(/,/g, ''));
+    const value =
+      typeof valueRaw === 'number'
+        ? valueRaw
+        : parseFloat(String(valueRaw).trim().replace(/,/g, ''));
 
     rows.push({
       row_index: dataIdx,
       item_code: itemCode,
       unit_code: unitCode,
-      new_cost: Number.isFinite(newCost) ? newCost : NaN,
+      value: Number.isFinite(value) ? value : NaN,
     });
   }
 

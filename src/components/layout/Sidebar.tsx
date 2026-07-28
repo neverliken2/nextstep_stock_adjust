@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils';
 import { useTheme } from '@/context/ThemeContext';
 import { useSidebar } from '@/context/SidebarContext';
 import { useAuth } from '@/context/AuthContext';
-import { menuItems } from '@/config/menuConfig';
+import { menuItems, type MenuPermission } from '@/config/menuConfig';
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -16,10 +16,12 @@ export default function Sidebar() {
   const { user } = useAuth();
 
   // filter เมนูตามสิทธิ์จาก login (requires undefined = แสดงเสมอ)
+  const permissionMap: Record<MenuPermission, boolean> = {
+    stock_balance: !!user?.can_stock_balance,
+    stock_adjust_reduce: !!user?.can_stock_adjust_reduce,
+  };
   const visibleItems = menuItems.filter(
-    (item) =>
-      !item.requires ||
-      (item.requires === 'stock_balance' && user?.can_stock_balance),
+    (item) => !item.requires || permissionMap[item.requires],
   );
 
   const sidebarWidth = isMobile ? 'w-64' : (isCollapsed ? 'w-16' : 'w-64');
